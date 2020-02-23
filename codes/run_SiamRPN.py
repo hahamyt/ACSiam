@@ -12,7 +12,7 @@ import torchvision
 
 viz = visdom.Visdom()
 
-from codes.utils import get_subwindow_tracking
+from codes.utils import get_subwindow_tracking, get_search_region_target
 
 
 def generate_anchor(total_stride, scales, ratios, score_size):
@@ -124,7 +124,7 @@ def tracker_eval(net, x_crop, target_pos, target_sz, window, scale_z, p):
     return target_pos, target_sz, score[best_pscore_id]
 
 # 初始化跟踪器网络
-def SiamRPN_init(im, target_pos, target_sz, net):
+def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     state = dict()
     p = TrackerConfig()
     p.update(net.cfg)
@@ -132,7 +132,7 @@ def SiamRPN_init(im, target_pos, target_sz, net):
     state['im_w'] = im.shape[1]
 
     if p.adaptive:
-        if ((target_sz[0] * target_sz[1]) / float(state['im_h'] * state['im_w'])) < 0.004:
+        if ((target_sz_init[0] * target_sz_init[1]) / float(state['im_h'] * state['im_w'])) < 0.004:
             p.instance_size = 287  # small object big search region
         else:
             p.instance_size = 271
@@ -143,34 +143,23 @@ def SiamRPN_init(im, target_pos, target_sz, net):
     # 计算图像3个通道的平均值
     avg_chans = np.mean(im, axis=(0, 1))
 
-    wc_z = target_sz[0] + p.context_amount * sum(target_sz)
-    hc_z = target_sz[1] + p.context_amount * sum(target_sz)
+    wc_z = target_sz_init[0] + p.context_amount * sum(target_sz_init)
+    hc_z = target_sz_init[1] + p.context_amount * sum(target_sz_init)
     s_z = round(np.sqrt(wc_z * hc_z))
     # initialize the exemplar
-    z_crop = get_subwindow_tracking(im, target_pos, p.exemplar_size,
+    z_crop = get_subwindow_tracking(im, target_pos_init, p.exemplar_size,
                                     s_z, avg_chans)
     z = Variable(z_crop.unsqueeze(0))
-
-    # 生成搜索区域
-    scale_z = p.exemplar_size / s_z
-    d_search = (p.instance_size - p.exemplar_size) / 2
-    pad = d_search / scale_z
-    s_x = s_z + 2 * pad
-    # extract scaled crops for search region x at previous target position
-    x_crop = get_subwindow_tracking(im, target_pos, p.instance_size,
-                                    round(s_x), avg_chans).unsqueeze(0)
 
     state['p'] = p
     state['net'] = net
     state['avg_chans'] = avg_chans
-    state['target_pos'] = target_pos
-    state['target_sz'] = target_sz
+    state['target_pos'] = target_pos_init
+    state['target_sz'] = target_sz_init
 
     state['exemplar_size'] = p.exemplar_size
     state['s_z'] = s_z
 
-    net.memory.insert_search_region(x_crop)
-    net.memory.insert_search_region_target(torch.from_numpy(np.concatenate((target_pos, target_sz))))
     # 传入目标的位置和大小, 还有第一帧的模板
     net.temple(z.cpu())
 
@@ -189,11 +178,11 @@ def SiamRPN_track(state, im):
     net = state['net']
     avg_chans = state['avg_chans']
     window = state['window']
-    target_pos = state['target_pos']
-    target_sz = state['target_sz']
+    target_pos_old = state['target_pos']
+    target_sz_old = state['target_sz']
 
-    wc_z = target_sz[1] + p.context_amount * sum(target_sz)
-    hc_z = target_sz[0] + p.context_amount * sum(target_sz)
+    wc_z = target_sz_old[1] + p.context_amount * sum(target_sz_old)
+    hc_z = target_sz_old[0] + p.context_amount * sum(target_sz_old)
     s_z = np.sqrt(wc_z * hc_z)
     scale_z = p.exemplar_size / s_z
     d_search = (p.instance_size - p.exemplar_size) / 2
@@ -201,31 +190,41 @@ def SiamRPN_track(state, im):
     s_x = s_z + 2 * pad
 
     # extract scaled crops for search region x at previous target position
-    x_crop = get_subwindow_tracking(im, target_pos, p.instance_size,
+    # target_pos 表示的是前一帧的目标的位置
+    x_crop_old = get_subwindow_tracking(im, target_pos_old, p.instance_size,
                                     round(s_x), avg_chans).unsqueeze(0)
-    # 可视化搜索区域
-    # viz.image(x_crop.squeeze())
+    # 这里的 target_pos 表示的是后一帧的目标新的位置
+    target_pos_new, target_sz_new, score = tracker_eval(net, x_crop_old.cpu(), target_pos_old, target_sz_old * scale_z, window, scale_z, p)
 
-    # target_pos, target_sz, score = tracker_eval(net, x_crop.cuda(), target_pos, target_sz * scale_z, window, scale_z, p)
-    target_pos, target_sz, score = tracker_eval(net, x_crop.cpu(), target_pos, target_sz * scale_z, window, scale_z, p)
-    target_pos[0] = max(0, min(state['im_w'], target_pos[0]))
-    target_pos[1] = max(0, min(state['im_h'], target_pos[1]))
-    target_sz[0] = max(10, min(state['im_w'], target_sz[0]))
-    target_sz[1] = max(10, min(state['im_h'], target_sz[1]))
-    state['target_pos'] = target_pos
-    state['target_sz'] = target_sz
+    target_pos_new[0] = max(0, min(state['im_w'], target_pos_new[0]))
+    target_pos_new[1] = max(0, min(state['im_h'], target_pos_new[1]))
+    target_sz_new[0] = max(10, min(state['im_w'], target_sz_new[0]))
+    target_sz_new[1] = max(10, min(state['im_h'], target_sz_new[1]))
+
+    state['target_pos'] = target_pos_new
+    state['target_sz'] = target_sz_new
     state['score'] = score
 
-    state['s_z'] = s_z
-    state['exemplar_size'] = p.exemplar_size
+    diff = target_pos_new - target_pos_old
 
+    # 更新网络
+    # 用于计算内核的样本
+    z_crop_old = get_subwindow_tracking(im, target_pos_old, p.exemplar_size, s_z, avg_chans)
+    z = z_crop_old.unsqueeze(0)
 
     # 利用LSTM更新滤波器
-    net.memory.insert_search_region(x_crop)         # 搜索区域
-    net.memory.insert_search_region_target(torch.from_numpy(np.concatenate((target_pos, target_sz))))  # 搜索结果的标签
-    # 样本
-    z_crop = get_subwindow_tracking(im, target_pos, p.exemplar_size, s_z, avg_chans)
-    z = z_crop.unsqueeze(0)
+    net.memory.insert_search_region(x_crop_old)         # 搜索区域
+
+    # 计算对应于z_crop的target
+    search_region_target = get_search_region_target(x_crop_old.shape, diff, target_sz_new)
+    net.memory.insert_search_region_target(search_region_target)
+
+    # 可视化显示中间结果
+    viz.heatmap(search_region_target, opts=dict(title='target',
+                                caption='target.'), win="target")
+    viz.image(x_crop_old.squeeze(), opts=dict(title='search_region',
+                                caption='region'), win="region")
+
     # 传入目标的位置和大小, 还有当前帧的模板
     net.update_kernel(z.cpu(), state)
     return state

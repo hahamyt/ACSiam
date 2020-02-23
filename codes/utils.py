@@ -164,3 +164,19 @@ def overlap_ratio(rect1, rect2):
     union = rect1[:,2]*rect1[:,3] + rect2[:,2]*rect2[:,3] - intersect
     iou = np.clip(intersect / union, 0, 1)
     return iou
+
+def get_search_region_target(search_region_shape, diff, target_sz_new):
+    # target_sz_new = np.array([60, 60])
+    b, c, w, h = search_region_shape
+    cx, cy = np.floor(w / 2), np.floor(h / 2)
+    new_cx, new_cy = cx + 3 * diff[0], cy + 3 * diff[1]
+    target = np.zeros((w, h))
+
+    tlx_new = int(new_cx - np.floor(target_sz_new[0] / 2))
+    tly_new = int(new_cy - np.floor(target_sz_new[1] / 2))
+    brx_new = int(new_cx + np.floor(target_sz_new[0] / 2))
+    bry_new = int(new_cy + np.floor(target_sz_new[1] / 2))
+
+    target[tly_new: bry_new, tlx_new: brx_new] = 255.
+    target = cv2.resize(target, (19, 19))
+    return torch.from_numpy(target).requires_grad_(True)
