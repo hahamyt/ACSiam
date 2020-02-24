@@ -12,7 +12,7 @@ import torchvision
 
 viz = visdom.Visdom()
 
-from codes.utils import get_subwindow_tracking, get_search_region_target
+from codes.utils import get_subwindow_tracking, get_search_region_target, crop_image
 
 
 def generate_anchor(total_stride, scales, ratios, score_size):
@@ -72,9 +72,9 @@ def tracker_eval(net, x_crop, target_pos, target_sz, window, scale_z, p):
     delta, score = net(x_crop)
 
     # 实时显示得分的变化
-    debug_score = torchvision.utils.make_grid(score.squeeze().unsqueeze(1),
-                                              nrow=5, padding=0)
-    viz.heatmap(debug_score.mean(0), opts=dict(title='Scores',
+    # debug_score = torchvision.utils.make_grid(score.squeeze().unsqueeze(1),
+    #                                           nrow=5, padding=0)
+    viz.heatmap(score.mean(0).mean(0), opts=dict(title='Scores',
                 caption='How random.'), win="score")
 
     delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
@@ -205,26 +205,20 @@ def SiamRPN_track(state, im):
     state['target_sz'] = target_sz_new
     state['score'] = score
 
-    diff = target_pos_new - target_pos_old
-
     # 更新网络
     # 用于计算内核的样本
-    z_crop_old = get_subwindow_tracking(im, target_pos_old, p.exemplar_size, s_z, avg_chans)
-    z = z_crop_old.unsqueeze(0)
+    rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+
+    z_crop_gt = crop_image(im, rect)
+    z = z_crop_gt.unsqueeze(0)
+    viz.image(z_crop_gt.squeeze(), opts=dict(title='z_crop_gt',
+                                              caption='z_crop_gt'), win="z_crop_gt")
+
 
     # 利用LSTM更新滤波器
-    net.memory.insert_search_region(x_crop_old)         # 搜索区域
-
-    # 计算对应于z_crop的target
-    search_region_target = get_search_region_target(x_crop_old.shape, diff, target_sz_new)
-    net.memory.insert_search_region_target(search_region_target)
-
-    # 可视化显示中间结果
-    viz.heatmap(search_region_target, opts=dict(title='target',
-                                caption='target.'), win="target")
-    viz.image(x_crop_old.squeeze(), opts=dict(title='search_region',
-                                caption='region'), win="region")
+    net.memory.insert_current_gt(z)         # 搜索得到的目标的样子
 
     # 传入目标的位置和大小, 还有当前帧的模板
-    net.update_kernel(z.cpu(), state)
+    net.update_kernel()
+
     return state

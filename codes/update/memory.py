@@ -9,56 +9,18 @@ class Memory():
     def __init__(self, amount):
         self.store_amount = amount
         # 用于存储离散的样本,便于操作
-        self.support_seqs_list = []
-        self.support_seqs_y_list = []
-        self.search_region_list = []
         self.search_target_list = []
-
-        self.support_seqs = None
-        self.support_seqs_y = None
-        self.search_region = None
         self.search_target = None
 
     def templete(self, templete):
         self.init_templete = templete
 
-    def insert_seqs(self, embeded):
-        # 若当前语义集合的长度超过了限定值,则删除除第一个embeded外的最早的一个embeded
-        if len(self.support_seqs_list) > self.store_amount:
-            self.support_seqs_list.__delitem__(1)
-        self.support_seqs_list.append(embeded)
-        # embeddeds的结构为(b, t, c, w, h), 其中b表示的是批大小, t表示的是序列的长度, c, h, w为通道和长宽
-        # seqs表示的是序列样本在tensor下的结构
-        self.support_seqs = torch.stack(self.support_seqs_list, 1).requires_grad_(True)
-
-    def insert_seqs_y(self, state):
-        # 在目标的位置处生成一个模板，　做为当前输入的标签
-        mask = np.zeros((state['im_h'], state['im_w']))
-        ltx, lty = state['target_pos'].astype(int) - state['target_sz'].astype(int) // 2
-        rbx, rby = state['target_pos'].astype(int) + state['target_sz'].astype(int) // 2
-        # 在目标区域设置标签
-        mask[lty:rby, ltx:rbx] = 1
-        sz = state['p'].exemplar_size
-        mask = cv2.resize(mask, (sz, sz))
-        mask = torch.from_numpy(mask).unsqueeze(0)
-        if len(self.support_seqs_y_list) > self.store_amount:
-            self.support_seqs_y_list.__delitem__(1)
-
-        self.support_seqs_y_list.append(mask)
-        self.support_seqs_y = torch.stack(self.support_seqs_y_list, 1).requires_grad_(True)
-
-    def insert_search_region(self, search_region):
-        if len(self.search_region_list) > self.store_amount:
-            self.search_region_list.__delitem__(1)
-        self.search_region_list.append(search_region)
-        self.search_region = torch.stack(self.search_region_list, 1).requires_grad_(True)
-
-    def insert_search_region_target(self, search_target):
+    def insert_current_gt(self, search_target):
         if len(self.search_target_list) > self.store_amount:
             self.search_target_list.__delitem__(1)
         # search_target的格式是(x, y, w, h)
         self.search_target_list.append(search_target)
-        self.search_target = torch.stack(self.search_target_list, 0).requires_grad_(True)
+        self.search_target = torch.stack(self.search_target_list, 1).requires_grad_(True)
 
 
 class ConvLSTMCell(nn.Module):

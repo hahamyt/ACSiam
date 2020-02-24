@@ -46,7 +46,6 @@ def torch_to_img(img):
 
 
 def get_subwindow_tracking(im, pos, model_sz, original_sz, avg_chans, out_mode='torch', new=False):
-
     if isinstance(pos, float):
         pos = [pos, pos]
     sz = original_sz
@@ -131,7 +130,9 @@ def load_net_weight(net, weight):
              'update.lstm.cell_list.1.conv.weight',
              'update.lstm.cell_list.1.conv.bias',
              'update.lstm.cell_list.2.conv.weight',
-             'update.lstm.cell_list.2.conv.bias',]
+             'update.lstm.cell_list.2.conv.bias',
+             'update.weight',
+             'update.bias']
     model_dict = net.state_dict()
     for k, v in net.state_dict().items():
         if k not in avoid:
@@ -180,3 +181,44 @@ def get_search_region_target(search_region_shape, diff, target_sz_new):
     target[tly_new: bry_new, tlx_new: brx_new] = 255.
     target = cv2.resize(target, (19, 19))
     return torch.from_numpy(target).requires_grad_(True)
+
+def crop_image(img, bbox, img_size=127, padding=0, valid=False):
+    x, y, w, h = np.array(bbox, dtype='float32')
+
+    half_w, half_h = w / 2, h / 2
+    center_x, center_y = x + half_w, y + half_h
+
+    if padding > 0:
+        pad_w = padding * w / img_size
+        pad_h = padding * h / img_size
+        half_w += pad_w
+        half_h += pad_h
+
+    img_h, img_w, _ = img.shape
+    min_x = int(center_x - half_w + 0.5)
+    min_y = int(center_y - half_h + 0.5)
+    max_x = int(center_x + half_w + 0.5)
+    max_y = int(center_y + half_h + 0.5)
+
+    if valid:
+        min_x = max(0, min_x)
+        min_y = max(0, min_y)
+        max_x = min(img_w, max_x)
+        max_y = min(img_h, max_y)
+
+    if min_x >= 0 and min_y >= 0 and max_x <= img_w and max_y <= img_h:
+        cropped = img[min_y:max_y, min_x:max_x, :]
+
+    else:
+        min_x_val = max(0, min_x)
+        min_y_val = max(0, min_y)
+        max_x_val = min(img_w, max_x)
+        max_y_val = min(img_h, max_y)
+
+        cropped = 128 * np.ones((max_y - min_y, max_x - min_x, 3), dtype='uint8')
+        cropped[min_y_val - min_y:max_y_val - min_y, min_x_val - min_x:max_x_val - min_x, :] \
+            = img[min_y_val:max_y_val, min_x_val:max_x_val, :]
+
+    scaled = cv2.resize(cropped, (img_size, img_size)).astype(np.float32)
+    scaled = np.transpose(scaled, (2, 0, 1))
+    return torch.from_numpy(scaled)

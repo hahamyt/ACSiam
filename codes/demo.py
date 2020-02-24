@@ -71,7 +71,7 @@ for f, image_file in enumerate(image_files):
     res = [int(l) for l in res]
     cv2.rectangle(im, (res[0], res[1]), (res[0] + res[2], res[1] + res[3]), (0, 255, 255), 3)
     cv2.imshow('SiamRPN', im)
-    cv2.waitKey(1000)
+    cv2.waitKey(1)
 
     all_ious.append(overlap_ratio(res, gts[f]))
 
