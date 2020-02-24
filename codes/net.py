@@ -102,13 +102,14 @@ class SiamRPN(nn.Module):
         # Update Part
         # 计算,将当前的这些gt样本的语义输出,与template模板的语义输出尽可能靠近
         # minimize the distance between new generated z_f and gt
-        z_f = self.update(z_f)
-        init_gt = self.memory.init_templete.repeat((z_f.size(0), 1, 1, 1))
+        current_gt = z_f[-1, :, :, :].unsqueeze(0).repeat((z_f.size(0) - 1, 1, 1, 1))
+        z_f = self.update(z_f[:-1, :, :, :])
+        # init_gt = self.memory.init_templete.repeat((z_f.size(0), 1, 1, 1))
         # Hessian Free version
-        @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
+        #@profile(precision=4, stream=open('memory_profiler.log', 'w+'))
         def closure():
             z = self.update(z_f)
-            loss = self.update_loss(z, init_gt)
+            loss = self.update_loss(z, current_gt)
             loss.backward(retain_graph=True)# (create_graph=True)
             # print(loss.item())
             return loss, z

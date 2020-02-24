@@ -16,7 +16,7 @@ class Memory():
         self.init_templete = templete
 
     def insert_current_gt(self, search_target):
-        if len(self.search_target_list) > self.store_amount:
+        if len(self.search_target_list) >= self.store_amount:
             self.search_target_list.__delitem__(1)
         # search_target的格式是(x, y, w, h)
         self.search_target_list.append(search_target)
