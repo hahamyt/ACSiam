@@ -21,6 +21,7 @@ from codes.utils import get_axis_aligned_bbox, cxy_wh_2_rect, load_net_weight, g
 # load net
 # net = SiamRPNvot()
 from codes.net import SiamRPNBIG
+from memory_profiler import profile # 内存占用分析插件
 
 if opts['seed'] is not None:
     np.random.seed(opts['seed'])
@@ -62,6 +63,7 @@ state = SiamRPN_init(im, target_pos, target_sz, net)
 
 # tracking and visualization
 toc = 0
+
 for f, image_file in enumerate(image_files):
     im = cv2.imread(image_file)
     tic = cv2.getTickCount()

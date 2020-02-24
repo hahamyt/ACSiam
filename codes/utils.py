@@ -131,8 +131,10 @@ def load_net_weight(net, weight):
              'update.lstm.cell_list.1.conv.bias',
              'update.lstm.cell_list.2.conv.weight',
              'update.lstm.cell_list.2.conv.bias',
-             'update.weight',
-             'update.bias']
+             'update.0.weight',
+             'update.0.bias',
+             'update.2.weight',
+             'update.2.bias']
     model_dict = net.state_dict()
     for k, v in net.state_dict().items():
         if k not in avoid:

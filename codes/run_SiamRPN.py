@@ -9,6 +9,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import visdom
 import torchvision
+from memory_profiler import profile # 内存占用分析插件
 
 viz = visdom.Visdom()
 
@@ -68,14 +69,18 @@ class TrackerConfig(object):
         self.score_size = (self.instance_size - self.exemplar_size) / self.total_stride + 1
 
 # 计算目标的得分图
+# @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
 def tracker_eval(net, x_crop, target_pos, target_sz, window, scale_z, p):
     delta, score = net(x_crop)
 
     # 实时显示得分的变化
-    # debug_score = torchvision.utils.make_grid(score.squeeze().unsqueeze(1),
-    #                                           nrow=5, padding=0)
+    debug_score = torchvision.utils.make_grid(score.squeeze().unsqueeze(1),
+                                              nrow=5, padding=0)
     viz.heatmap(score.mean(0).mean(0), opts=dict(title='Scores',
                 caption='How random.'), win="score")
+
+    viz.heatmap(debug_score.mean(0), opts=dict(title='Debug Scores',
+                caption='How random.'), win="debug score")
 
     delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
     score = F.softmax(score.permute(1, 2, 3, 0).contiguous().view(2, -1), dim=0).data[1, :].cpu().numpy()
@@ -173,6 +178,7 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     return state
 
 # 跟踪
+# @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
 def SiamRPN_track(state, im):
     p = state['p']
     net = state['net']
@@ -207,9 +213,11 @@ def SiamRPN_track(state, im):
 
     # 更新网络
     # 用于计算内核的样本
-    rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-
-    z_crop_gt = crop_image(im, rect)
+    z_crop_gt = get_subwindow_tracking(im, target_pos_new, p.exemplar_size,
+                                    s_z, avg_chans)
+    # rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+    #
+    # z_crop_gt = crop_image(im, rect)
     z = z_crop_gt.unsqueeze(0)
     viz.image(z_crop_gt.squeeze(), opts=dict(title='z_crop_gt',
                                               caption='z_crop_gt'), win="z_crop_gt")
@@ -219,6 +227,7 @@ def SiamRPN_track(state, im):
     net.memory.insert_current_gt(z)         # 搜索得到的目标的样子
 
     # 传入目标的位置和大小, 还有当前帧的模板
-    net.update_kernel()
+    if len(net.memory.search_target_list) >= net.memory.store_amount:
+        net.update_kernel()
 
     return state

@@ -1,7 +1,7 @@
 import torch
 from torch.nn.utils.convert_parameters import vector_to_parameters, parameters_to_vector
 from functools import reduce
-
+from memory_profiler import profile # 内存占用分析插件
 
 class HessianFree(torch.optim.Optimizer):
     """
@@ -70,6 +70,7 @@ class HessianFree(torch.optim.Optimizer):
             views.append(view)
         return torch.cat(views, 0)
 
+    # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
     def step(self, closure, b=None, M_inv=None):
         """
         Performs a single optimization step.

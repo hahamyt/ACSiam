@@ -11,7 +11,7 @@ from codes.update.hessianfree import HessianFree
 from codes.update.memory import Memory, ConvLSTM
 from codes.update.updatenet import MatchingNetwork
 import torch
-
+from memory_profiler import profile # 内存占用分析插件
 
 class SiamRPN(nn.Module):
     def __init__(self, size=2, feature_out=512, anchor=5):
@@ -40,11 +40,13 @@ class SiamRPN(nn.Module):
         )
 
         # 用于推理的更新网络
-        self.update = nn.Conv2d(feat_in, feature_out, 1)   # MatchingNetwork()
+        self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 1),
+                                    torch.nn.Tanh(),
+                                    nn.Conv2d(feature_out, feature_out, 1),)# MatchingNetwork()
         self.update_loss = torch.nn.MSELoss()
         # self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
         self.update_optimizer = HessianFree(self.update.parameters(),
-                                            use_gnm=True, verbose=True)
+                                            use_gnm=True, verbose=False)
         self.anchor = anchor
         self.feature_out = feature_out
 
@@ -93,6 +95,7 @@ class SiamRPN(nn.Module):
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
 
+    # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
     def update_kernel(self):
         gts = self.memory.search_target
         z_f = self.featureExtract(gts.squeeze(0))
@@ -102,17 +105,20 @@ class SiamRPN(nn.Module):
         z_f = self.update(z_f)
         init_gt = self.memory.init_templete.repeat((z_f.size(0), 1, 1, 1))
         # Hessian Free version
+        @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
         def closure():
             z = self.update(z_f)
             loss = self.update_loss(z, init_gt)
-            loss.backward(create_graph=True)
-            print(loss.item())
+            loss.backward(retain_graph=True)# (create_graph=True)
+            # print(loss.item())
             return loss, z
 
-        for i in range(5):
-            print("Epoch {}".format(i))
+        for i in range(1):
+            # print("Epoch {}".format(i))
             self.update_optimizer.zero_grad()
             self.update_optimizer.step(closure, M_inv=None)
+
+
         ### Normal Version
         # loss = self.update_loss(z_f, init_gt)
         #
@@ -120,6 +126,7 @@ class SiamRPN(nn.Module):
         # self.update_optimizer.zero_grad()
         # loss.backward()
         # self.update_optimizer.step()
+
 
         cls1_kernel_raw = self.conv_cls1(z_f[-1, :, :, :].unsqueeze(0))
         kernel_size = cls1_kernel_raw.data.size()[-1]
