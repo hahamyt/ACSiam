@@ -40,13 +40,14 @@ class SiamRPN(nn.Module):
         )
 
         # 用于推理的更新网络
-        self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 1),
-                                    torch.nn.Tanh(),
-                                    nn.Conv2d(feature_out, feature_out, 1),)# MatchingNetwork()
+        # self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 1),
+        #                             torch.nn.Tanh(),
+        #                             nn.Conv2d(feature_out, feature_out, 1),)
+        self.update = MatchingNetwork()
         self.update_loss = torch.nn.MSELoss()
-        # self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
-        self.update_optimizer = HessianFree(self.update.parameters(),
-                                            use_gnm=True, verbose=False)
+        self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
+        # self.update_optimizer = HessianFree(self.update.lstm.parameters(),
+        #                                     use_gnm=True, verbose=False)
         self.anchor = anchor
         self.feature_out = feature_out
 
@@ -59,7 +60,7 @@ class SiamRPN(nn.Module):
         # 原来的算法是,在第一帧直接计算一次kernel,现在我们引入一个LSTM网络,利用存储在Memory中的时序训练样本
         # 推理出kernel
         # 1, 因此先定义一个Memory组件: amount 表示的是存储时序的数目,这里取值为3
-        self.memory = Memory(amount=5)
+        self.memory = Memory(amount=2)
         # 2, 定义embedded的集合
         self.r1_kernel = []
         # 3, 边框回归的组件与原来保持一致,这里不做变化
@@ -99,25 +100,30 @@ class SiamRPN(nn.Module):
     def update_kernel(self):
         gts = self.memory.search_target
         z_f = self.featureExtract(gts.squeeze(0))
+        # 加入第一帧的模板信息
+        z_f = torch.cat((self.memory.init_templete, z_f))
+
         # Update Part
         # 计算,将当前的这些gt样本的语义输出,与template模板的语义输出尽可能靠近
         # minimize the distance between new generated z_f and gt
-        current_gt = z_f[-1, :, :, :].unsqueeze(0).repeat((z_f.size(0) - 1, 1, 1, 1))
-        z_f = self.update(z_f[:-1, :, :, :])
+        current_gt = z_f[-1, :, :, :].unsqueeze(0)
+
         # init_gt = self.memory.init_templete.repeat((z_f.size(0), 1, 1, 1))
         # Hessian Free version
         #@profile(precision=4, stream=open('memory_profiler.log', 'w+'))
         def closure():
-            z = self.update(z_f)
+            z = self.update(z_f[:-1, :, :, :].unsqueeze(0))
+            # 将结果与模板相加
+            z = z + self.memory.init_templete.unsqueeze(0)
             loss = self.update_loss(z, current_gt)
             loss.backward(retain_graph=True)# (create_graph=True)
-            # print(loss.item())
+            print(loss.item())
             return loss, z
 
         for i in range(1):
             # print("Epoch {}".format(i))
             self.update_optimizer.zero_grad()
-            self.update_optimizer.step(closure, M_inv=None)
+            self.update_optimizer.step(closure)#, M_inv=None)
 
 
         ### Normal Version
@@ -128,8 +134,11 @@ class SiamRPN(nn.Module):
         # loss.backward()
         # self.update_optimizer.step()
 
+        z_f = self.update(z_f[:-1, :, :, :].unsqueeze(0))
+        # 将结果与模板相加
+        z_f = z_f + self.memory.init_templete.unsqueeze(0)
 
-        cls1_kernel_raw = self.conv_cls1(z_f[-1, :, :, :].unsqueeze(0))
+        cls1_kernel_raw = self.conv_cls1(z_f[-1, :, :, :])
         kernel_size = cls1_kernel_raw.data.size()[-1]
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor * 2, self.feature_out, kernel_size, kernel_size)
 

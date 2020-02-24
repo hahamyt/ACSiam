@@ -43,7 +43,8 @@ class MatchingNetwork(nn.Module):
         :return:
         """
         output, self.hidden = self.lstm(support_set_images, self.hidden)  # , self.hidden)
-        return output
+        # 输出最后一次的输出
+        return output[-1][:, -1, :, :].unsqueeze(0)
 
     def train_net(self, support_set_images, gt_temple):
         output = self.forward(support_set_images)
