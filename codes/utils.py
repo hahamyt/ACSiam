@@ -134,7 +134,9 @@ def load_net_weight(net, weight):
              'update.0.weight',
              'update.0.bias',
              'update.2.weight',
-             'update.2.bias']
+             'update.2.bias',
+             'merge.weight',
+             'merge.bias']
     model_dict = net.state_dict()
     for k, v in net.state_dict().items():
         if k not in avoid:
@@ -143,6 +145,9 @@ def load_net_weight(net, weight):
     net.load_state_dict(model_dict)
     net.requires_grad_(False)
     net.update.requires_grad_(True)
+    net.conv_cls1.requires_grad_(True)
+    net.conv_cls2.requires_grad_(True)
+    # net.merge.requires_grad_(True)
     return net
 
 def overlap_ratio(rect1, rect2):

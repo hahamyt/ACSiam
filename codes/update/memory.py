@@ -10,18 +10,31 @@ class Memory():
         self.store_amount = amount
         # 用于存储离散的样本,便于操作
         self.search_target_list = []
+        self.search_region_list = []
         self.search_target = None
+        self.search_regions = None
 
-    def templete(self, templete):
+    def templete(self, templete, region):
         self.init_templete = templete
+        self.init_region = region
 
     def insert_current_gt(self, search_target):
+        # 随机删除溢出部分
         if len(self.search_target_list) >= self.store_amount:
-            self.search_target_list.__delitem__(1)
-        # search_target的格式是(x, y, w, h)
+            index = np.random.randint(1, self.store_amount)
+            self.search_target_list.__delitem__(index)
+
         self.search_target_list.append(search_target)
         self.search_target = torch.stack(self.search_target_list, 1).requires_grad_(True)
 
+    def insert_search_region(self, search_region):
+        if len(self.search_region_list) >= self.store_amount:
+            index = np.random.randint(1, self.store_amount)
+            self.search_region_list.__delitem__(index)
+
+        # search_target的格式是(x, y, w, h)
+        self.search_region_list.append(search_region)
+        self.search_regions = torch.stack(self.search_region_list, 1).requires_grad_(True)
 
 class ConvLSTMCell(nn.Module):
 

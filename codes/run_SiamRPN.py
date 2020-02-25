@@ -72,8 +72,14 @@ class TrackerConfig(object):
 # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
 def tracker_eval(net, x_crop, target_pos, target_sz, window, scale_z, p):
     delta, score = net(x_crop)
-
+    # print("方差:", score.squeeze(0).mean(0).mean().item() / score.squeeze(0).mean(0).var().item())
     # 实时显示得分的变化
+    background_score = score[:, :5, :, :].squeeze()
+    target_score = score[:, 5:, :, :].squeeze()
+    diff_score = (target_score - background_score)
+    viz.heatmap(diff_score.mean(0), opts=dict(title='diff_score',
+                                                 caption='diff_score.'), win="diff_score")
+
     debug_score = torchvision.utils.make_grid(score.squeeze().unsqueeze(1),
                                               nrow=5, padding=0)
     viz.heatmap(score.mean(0).mean(0), opts=dict(title='Scores',
@@ -166,7 +172,13 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     state['s_z'] = s_z
 
     # 传入目标的位置和大小, 还有第一帧的模板
-    net.temple(z.cpu())
+    scale_z = p.exemplar_size / s_z
+    d_search = (p.instance_size - p.exemplar_size) / 2
+    pad = d_search / scale_z
+    s_x = s_z + 2 * pad
+    x_crop_init = get_subwindow_tracking(im, target_pos_init, p.instance_size,
+                                        round(s_x), avg_chans).unsqueeze(0)
+    net.temple(z, x_crop_init)
 
     if p.windowing == 'cosine':
         window = np.outer(np.hanning(p.score_size), np.hanning(p.score_size))
@@ -213,6 +225,12 @@ def SiamRPN_track(state, im):
 
     # 更新网络
     # 用于计算内核的样本
+    x_crop_new = get_subwindow_tracking(im, target_pos_new, p.instance_size,
+                                        round(s_x), avg_chans).unsqueeze(0)
+
+    viz.image(x_crop_new.squeeze(), opts=dict(title='x_crop_new',
+                                             caption='x_crop_new'), win="x_crop_new")
+
     z_crop_gt = get_subwindow_tracking(im, target_pos_new, p.exemplar_size,
                                     s_z, avg_chans)
     # rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
@@ -225,9 +243,5 @@ def SiamRPN_track(state, im):
 
     # 利用LSTM更新滤波器
     net.memory.insert_current_gt(z)         # 搜索得到的目标的样子
-
-    # 传入目标的位置和大小, 还有当前帧的模板
-    if len(net.memory.search_target_list) >= net.memory.store_amount:
-        net.update_kernel()
-
+    net.memory.insert_search_region(x_crop_old)   # 之前的搜索区域
     return state

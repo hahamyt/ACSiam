@@ -12,6 +12,9 @@ from codes.update.memory import Memory, ConvLSTM
 from codes.update.updatenet import MatchingNetwork
 import torch
 from memory_profiler import profile # 内存占用分析插件
+import visdom
+
+viz = visdom.Visdom()
 
 class SiamRPN(nn.Module):
     def __init__(self, size=2, feature_out=512, anchor=5):
@@ -40,11 +43,13 @@ class SiamRPN(nn.Module):
         )
 
         # 用于推理的更新网络
-        # self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 1),
-        #                             torch.nn.Tanh(),
-        #                             nn.Conv2d(feature_out, feature_out, 1),)
-        self.update = MatchingNetwork()
+        self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 1))
+                                    # torch.nn.Tanh(),
+                                    # nn.Conv2d(feature_out, feature_out, 1),)
+
+        # self.update = MatchingNetwork()
         self.update_loss = torch.nn.MSELoss()
+        self.tmple_loss = torch.nn.CrossEntropyLoss()
         self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
         # self.update_optimizer = HessianFree(self.update.lstm.parameters(),
         #                                     use_gnm=True, verbose=False)
@@ -65,7 +70,7 @@ class SiamRPN(nn.Module):
         self.r1_kernel = []
         # 3, 边框回归的组件与原来保持一致,这里不做变化
         self.cls1_kernel = []
-
+        self.l = torch.tensor(0.3, dtype=torch.float32).requires_grad_(True)
         self.cfg = {}
 
     def forward(self, x):
@@ -85,66 +90,80 @@ class SiamRPN(nn.Module):
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
 
 
-    def temple(self, z):
+    def temple(self, z, search_region_init):
         z_f = self.featureExtract(z)
+        search_region_init = self.featextract(search_region_init)
         # 将第一帧的模板保存起来
-        self.memory.templete(z_f)
+        self.memory.templete(z_f, search_region_init)
         # 初始化滤波器,包括边框回归的和跟踪打分的
         r1_kernel_raw = self.conv_r1(z_f)
         cls1_kernel_raw = self.conv_cls1(z_f)
         kernel_size = r1_kernel_raw.data.size()[-1]
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
-        self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
+        self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size).requires_grad_(True)
+        self.init_kernel = self.cls1_kernel.clone()
+        self.init_score = F.conv2d(self.conv_cls2(self.memory.init_region), self.cls1_kernel)
 
     # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
     def update_kernel(self):
+        self.debug_old = self.cls1_kernel.clone()
+
         gts = self.memory.search_target
         z_f = self.featureExtract(gts.squeeze(0))
-        # 加入第一帧的模板信息
-        z_f = torch.cat((self.memory.init_templete, z_f))
-
+        search_regions = self.featextract(self.memory.search_regions.squeeze(0))
         # Update Part
-        # 计算,将当前的这些gt样本的语义输出,与template模板的语义输出尽可能靠近
-        # minimize the distance between new generated z_f and gt
-        current_gt = z_f[-1, :, :, :].unsqueeze(0)
+        all_loss = 0
 
-        # init_gt = self.memory.init_templete.repeat((z_f.size(0), 1, 1, 1))
-        # Hessian Free version
-        #@profile(precision=4, stream=open('memory_profiler.log', 'w+'))
-        def closure():
-            z = self.update(z_f[:-1, :, :, :].unsqueeze(0))
-            # 将结果与模板相加
-            z = z + self.memory.init_templete.unsqueeze(0)
-            loss = self.update_loss(z, current_gt)
-            loss.backward(retain_graph=True)# (create_graph=True)
-            print(loss.item())
-            return loss, z
+        # 出了更新内核,还要更新一个神经网络
+        # z_f = self.update(z_f)
 
-        for i in range(1):
-            # print("Epoch {}".format(i))
-            self.update_optimizer.zero_grad()
-            self.update_optimizer.step(closure)#, M_inv=None)
+        # 计算,将当前的这些gt样本的语义输出,与template模板的语义输出尽可能靠近s
+        for i in range(z_f.size(0)):
+            # 遍历所有的内核样本
+            z_i = z_f[i, :, :, :].unsqueeze(0)
+            for j in range(search_regions.size(0)):
+                region_j = search_regions[j, :, :, :].unsqueeze(0)
+                # 我们的目的是,当前样本在不同时刻的形态下的图像, 与搜索区域计算出来的得分应该是越接近越好
+                z_j = z_f[j, :, :, :].unsqueeze(0)
+                # 利用不同的z, 计算kernel
+                # 这里计算的是时刻i时的样本
+                cls1_kernel_raw = self.conv_cls1(z_i)
+                kernel_size = cls1_kernel_raw.data.size()[-1]
+                self.cls1_kernel = cls1_kernel_raw.view(self.anchor * 2, self.feature_out, kernel_size,
+                                                        kernel_size).requires_grad_(True)
+                score_i = F.conv2d(self.conv_cls2(region_j), self.cls1_kernel)
+                # 这里计算的是当前时刻时的样本
+                cls1_kernel_raw = self.conv_cls1(z_j)
+                self.cls1_kernel = cls1_kernel_raw.view(self.anchor * 2, self.feature_out, kernel_size,
+                                                        kernel_size).requires_grad_(True)
+                score_j = F.conv2d(self.conv_cls2(region_j), self.cls1_kernel)
 
+                loss1 = self.update_loss(score_i, score_j)
 
-        ### Normal Version
-        # loss = self.update_loss(z_f, init_gt)
-        #
-        # # optimize process
-        # self.update_optimizer.zero_grad()
-        # loss.backward()
-        # self.update_optimizer.step()
+                loss2 = self.update_loss(self.init_kernel, self.cls1_kernel)
+                loss = self.tmple_loss(loss1, loss2)
 
-        z_f = self.update(z_f[:-1, :, :, :].unsqueeze(0))
-        # 将结果与模板相加
-        z_f = z_f + self.memory.init_templete.unsqueeze(0)
+                # self.l.clamp_(0., 1.)
+                all_loss = all_loss + loss # loss1 + loss2
+            # 计算所有temple图像在初始搜索区域的响应score_init_i, 该响应应该和score_init差不多
+            cls1_kernel_raw = self.conv_cls1(z_i)
+            kernel_size = cls1_kernel_raw.data.size()[-1]
+            self.cls1_kernel = cls1_kernel_raw.view(self.anchor * 2, self.feature_out, kernel_size,
+                                                    kernel_size).requires_grad_(True)
 
-        cls1_kernel_raw = self.conv_cls1(z_f[-1, :, :, :])
-        kernel_size = cls1_kernel_raw.data.size()[-1]
-        self.cls1_kernel = cls1_kernel_raw.view(self.anchor * 2, self.feature_out, kernel_size, kernel_size)
+            score_init_i = F.conv2d(self.conv_cls2(self.memory.init_region), self.cls1_kernel)
+            init_score = F.conv2d(self.conv_cls2(self.memory.init_region), self.cls1_kernel)
 
-        # 用于边框回归的 :为了防止对边框回归过于频繁, 我们在更新的过程中,不更新边框回归的核
-        # cls1_kernel_raw = self.conv_cls1(z_f)
-        # self.cls1_kernel = cls1_kernel_raw.view(self.anchor * 2, self.feature_out, kernel_size, kernel_size)
+            loss3 = self.update_loss(score_init_i, init_score)
+            all_loss += loss3 * 0.1
+
+        self.update_optimizer.zero_grad()
+        all_loss.backward(retain_graph=True)
+        self.update_optimizer.step()
+        print("Loss:", all_loss)
+
+        print("内核变化程度:", (self.init_kernel - self.cls1_kernel).sum().item())
+
 
 class SiamRPNBIG(SiamRPN):
     def __init__(self):
