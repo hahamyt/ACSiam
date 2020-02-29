@@ -4,37 +4,31 @@ from torch.autograd import Variable
 import numpy as np
 import cv2
 from torchvision.transforms import Resize, Compose
+import torchvision.models as models
+from codes.update.sample_manger import samples_manager
+
 
 class Memory():
     def __init__(self, amount):
         self.store_amount = amount
         # 用于存储离散的样本,便于操作
-        self.search_target_list = []
-        self.search_region_list = []
-        self.search_target = None
-        self.search_regions = None
+        self.support_set_list = []
+        self.support_set = None
+        self.featureExtractor = models.squeezenet1_0(pretrained=True).features
+        self.manager = samples_manager(amount)
 
-    def templete(self, templete, region):
-        self.init_templete = templete
-        self.init_region = region
 
-    def insert_current_gt(self, search_target):
-        # 随机删除溢出部分
-        if len(self.search_target_list) >= self.store_amount:
-            index = np.random.randint(1, self.store_amount)
-            self.search_target_list.__delitem__(index)
+    def insert_support_gt(self, feat, gt):
+        with torch.no_grad():
+            # feat = self.featureExtractor.forward(gt.unsqueeze(0)).view(1, -1)
+            self.manager.insert(feat, gt)
 
-        self.search_target_list.append(search_target)
-        self.search_target = torch.stack(self.search_target_list, 1).requires_grad_(True)
+        self.support_set = torch.stack(self.manager.support_set_list)
+        pass
 
-    def insert_search_region(self, search_region):
-        if len(self.search_region_list) >= self.store_amount:
-            index = np.random.randint(1, self.store_amount)
-            self.search_region_list.__delitem__(index)
-
-        # search_target的格式是(x, y, w, h)
-        self.search_region_list.append(search_region)
-        self.search_regions = torch.stack(self.search_region_list, 1).requires_grad_(True)
+    def insert_init_gt(self, init_gt):
+        # init_gt = self.featureExtractor(init_gt).view(1, -1)
+        self.manager.insert_gt(init_gt.view(1, 1, -1))
 
 class ConvLSTMCell(nn.Module):
 

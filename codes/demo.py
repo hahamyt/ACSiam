@@ -24,6 +24,7 @@ sys.path.append('../')
 # net = SiamRPNvot()
 from codes.net import SiamRPNBIG
 
+
 if opts['seed'] is not None:
     np.random.seed(opts['seed'])
     random.seed(opts['seed'])
@@ -32,9 +33,9 @@ if opts['seed'] is not None:
     torch.cuda.manual_seed_all(opts['seed'])
     torch.backends.cudnn.deterministic = True
 
-net = SiamRPNvot()
+net = SiamRPNBIG()
 net = load_net_weight(net, torch.load(join(realpath(dirname(__file__)),
-                    'SiamRPNVOT.model'), map_location=torch.device('cpu')))
+                    'SiamRPNBIG.model'), map_location=torch.device('cpu')))
 
 net.eval().cpu()
 
@@ -42,15 +43,15 @@ net.eval().cpu()
 # image_files = sorted(glob.glob('./bag/*.jpg'))
 # init_rbox = [334.02,128.36,438.19,188.78,396.39,260.83,292.23,200.41]
 
-image_files = sorted(glob.glob('/media/x/KINGIDISK/vot-toolkit/myworkspace/sequences/basketball/color/*.jpg'))
-init_rbox = [149.91,215.96,179.04,215.94,179.16,351.26,150.03,351.28]
+image_files = sorted(glob.glob('/media/x/_dde_data/girl/color/*.jpg'))
+init_rbox = [301.46,135.15,338.2,137.57,327.25,304.09,290.51,301.67]
 [cx, cy, w, h] = get_axis_aligned_bbox(init_rbox)
 
 # 得到ground truth
 gts = []
 all_ious = []
 # gt = np.loadtxt("./bag/groundtruth.txt", delimiter=',')
-gt = np.loadtxt("/media/x/KINGIDISK/vot-toolkit/myworkspace/sequences/basketball/groundtruth.txt", delimiter=',')
+gt = np.loadtxt("/media/x/_dde_data/girl/groundtruth.txt", delimiter=',')
 #将cxcywh转成xywh
 for i in range(len(gt)):
     rect = np.array(get_axis_aligned_bbox(gt[i]))
@@ -59,12 +60,12 @@ for i in range(len(gt)):
 
 # tracker init
 target_pos, target_sz = np.array([cx, cy]), np.array([w, h])
-im = cv2.imread(image_files[378])  # HxWxC
+im = cv2.imread(image_files[0])  # HxWxC
 state = SiamRPN_init(im, target_pos, target_sz, net)
 
 # tracking and visualization
 toc = 0
-for f, image_file in enumerate(image_files[378:]):
+for f, image_file in enumerate(image_files):
     im = cv2.imread(image_file)
     tic = cv2.getTickCount()
     state = SiamRPN_track(state, im)  # track
@@ -76,10 +77,11 @@ for f, image_file in enumerate(image_files[378:]):
     cv2.waitKey(1)
 
     # 传入目标的位置和大小, 还有当前帧的模板
-    if f > net.memory.store_amount and f % 5 == 0:
-            net.update_kernel()
+    # if f > net.memory.store_amount and f % 5 == 0:
+    #     net.update_kernel()
     iou = overlap_ratio(res, gts[f])
     all_ious.append(iou)
+
     # if iou < 0.1:
     #     print("跟踪失败")
 
