@@ -3,4 +3,5 @@
 /codes/SiamRPNVOT.model
 /codes/__pycache__
 /codes/update/__pycache__
-/.idea
+.idea
+.vscode

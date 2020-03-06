@@ -9,20 +9,20 @@ import glob, cv2, torch
 import random
 import sys
 import os
+sys.path.append('../')
 import numpy as np
 from os.path import realpath, dirname, join
 
 from torch.autograd import Variable
 
-from codes.net import SiamRPNvot
-from codes.options import opts
-from codes.run_SiamRPN import SiamRPN_init, SiamRPN_track
-from codes.utils import get_axis_aligned_bbox, cxy_wh_2_rect, load_net_weight, get_subwindow_tracking, overlap_ratio
-sys.path.append('../')
+from net import SiamRPNvot
+from options import opts
+from run_SiamRPN import SiamRPN_init, SiamRPN_track
+from utils import get_axis_aligned_bbox, cxy_wh_2_rect, load_net_weight, get_subwindow_tracking, overlap_ratio
 
 # load net
-# net = SiamRPNvot()
-from codes.net import SiamRPNBIG
+net = SiamRPNvot()
+# from net import SiamRPNBIG
 
 
 if opts['seed'] is not None:
@@ -33,9 +33,9 @@ if opts['seed'] is not None:
     torch.cuda.manual_seed_all(opts['seed'])
     torch.backends.cudnn.deterministic = True
 
-net = SiamRPNBIG()
+# net = SiamRPNBIG()
 net = load_net_weight(net, torch.load(join(realpath(dirname(__file__)),
-                    'SiamRPNBIG.model'), map_location=torch.device('cpu')))
+                    'SiamRPNVOT.model'), map_location=torch.device('cpu')))
 
 net.eval().cpu()
 

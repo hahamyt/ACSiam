@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 from torchvision.transforms import Resize, Compose
 import torchvision.models as models
-from codes.update.sample_manger import samples_manager
+from update.sample_manger import samples_manager
 
 
 class Memory():
@@ -16,12 +16,12 @@ class Memory():
         self.support_set = None
         self.featureExtractor = models.squeezenet1_0(pretrained=True).features
         self.manager = samples_manager(amount)
-
+        self.neg_set = []
 
     def insert_support_gt(self, feat, gt):
-        with torch.no_grad():
-            # feat = self.featureExtractor.forward(gt.unsqueeze(0)).view(1, -1)
-            self.manager.insert(feat, gt)
+        # with torch.no_grad():
+        # feat = self.featureExtractor.forward(gt.unsqueeze(0)).view(1, -1)
+        self.manager.insert(feat, gt)
 
         self.support_set = torch.stack(self.manager.support_set_list)
         pass
@@ -29,6 +29,11 @@ class Memory():
     def insert_init_gt(self, init_gt):
         # init_gt = self.featureExtractor(init_gt).view(1, -1)
         self.manager.insert_gt(init_gt.view(1, 1, -1))
+
+    def insert_neg_set(self, neg_samples):
+        if len(self.neg_set) >= self.store_amount:
+            self.neg_set.__delitem__(0)
+        self.neg_set.append(neg_samples)
 
 class ConvLSTMCell(nn.Module):
 

@@ -6,8 +6,8 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from codes.update.hessianfree import HessianFree
-from codes.update.memory import Memory, ConvLSTM
+from update.hessianfree import HessianFree
+from update.memory import Memory, ConvLSTM
 import torch
 from memory_profiler import profile # 内存占用分析插件
 import visdom
@@ -39,18 +39,6 @@ class SiamRPN(nn.Module):
             nn.Conv2d(configs[4], configs[5], kernel_size=3),
             nn.BatchNorm2d(configs[5]),
         )
-
-        # 用于推理的更新网络
-        self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 1))
-                                    # torch.nn.Tanh(),
-                                    # nn.Conv2d(feature_out, feature_out, 1),)
-
-        # self.update = MatchingNetwork()
-        self.update_loss = torch.nn.MSELoss()
-        self.tmple_loss = torch.nn.CrossEntropyLoss()
-        self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
-        # self.update_optimizer = HessianFree(self.update.lstm.parameters(),
-        #                                     use_gnm=True, verbose=False)
         self.anchor = anchor
         self.feature_out = feature_out
 
@@ -59,6 +47,17 @@ class SiamRPN(nn.Module):
         self.conv_cls1 = nn.Conv2d(feat_in, feature_out*2*anchor, 3)
         self.conv_cls2 = nn.Conv2d(feat_in, feature_out, 3)
         self.regress_adjust = nn.Conv2d(4*anchor, 4*anchor, 1)
+
+        # 用于推理的更新网络
+        self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 3),
+                                    torch.nn.Tanh(),
+                                    nn.Conv2d(feature_out, feature_out, 1))
+
+        # self.update = MatchingNetwork()
+        self.update_loss = torch.nn.MSELoss()
+        self.tmple_loss = torch.nn.CrossEntropyLoss()
+        self.cls_optimizer = torch.optim.SGD(self.conv_cls2.parameters(), lr = 0.01, momentum=0.9)
+        self.update_optimizer = HessianFree(self.update.parameters(), use_gnm=True, verbose=False)
 
         # 原来的算法是,在第一帧直接计算一次kernel,现在我们引入一个LSTM网络,利用存储在Memory中的时序训练样本
         # 推理出kernel
@@ -71,6 +70,7 @@ class SiamRPN(nn.Module):
         self.cfg = {}
 
         self.step = 0
+        self.step2 = 0
 
     def forward(self, x):
         x_f = self.featureExtract(x)
@@ -86,7 +86,7 @@ class SiamRPN(nn.Module):
         cls1_kernel_raw = self.conv_cls1(z_f)
         kernel_size = r1_kernel_raw.data.size()[-1]
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
-        self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
+        self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size).requires_grad_(True)
 
 
     def temple(self, z):

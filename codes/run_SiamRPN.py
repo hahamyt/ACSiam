@@ -10,11 +10,11 @@ import torch.nn.functional as F
 import visdom
 import torchvision
 from memory_profiler import profile # 内存占用分析插件
-
+from update.updatenet import MatchingNetwork
 viz = visdom.Visdom()
 debug = True
 
-from codes.utils import get_subwindow_tracking, get_search_region_target, crop_image
+from utils import get_subwindow_tracking, get_search_region_target, crop_image, overlap_ratio
 
 def generate_anchor(total_stride, scales, ratios, score_size):
     anchor_num = len(ratios) * len(scales)
@@ -82,8 +82,11 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
     # 用于边框回归的量,表示的是分别对5中anchor进行回归, 其结构展开来应该是(4, 5, 19, 19)
     delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
     # 目标打分的量, 表示的是对5种anchor分别处理下的打分的量,其结构展开来应该为(5, 19, 19)
-    score = F.softmax(score.permute(1, 2, 3, 0).contiguous().view(2, -1), dim=0).data[1, :].cpu().numpy()
-
+    back_score = F.softmax(score.permute(1, 2, 3, 0).contiguous().view(2, -1), dim=0)
+    score = back_score.data[1, :].cpu().numpy()
+    b = score.reshape(5, 19, 19)
+    # b = np.concatenate(b)
+    viz.heatmap(b.mean(0), win="Pscore", opts={"title":"Pscore"})
     delta[0, :] = delta[0, :] * p.anchor[:, 2] + p.anchor[:, 0]
     delta[1, :] = delta[1, :] * p.anchor[:, 3] + p.anchor[:, 1]
     delta[2, :] = np.exp(delta[2, :]) * p.anchor[:, 2]
@@ -111,88 +114,94 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
 
     # window float
     pscore = pscore * (1 - p.window_influence) + window * p.window_influence
-    b = pscore.reshape(5, 19, 19)
-    # b = np.concatenate(b)
-    viz.heatmap(b.mean(0), win="Pscore", opts={"title":"Pscore"})
+   
     # 返回前4个最大值的索引
     best_pscore_id = np.argmax(pscore)
 
-    # 计算得到k个得分最高样本的尺寸和位置
-    if (len(net.memory.manager.support_set_list) >= net.memory.store_amount) and debug:
-        # best_pscore_id = np.argmax(pscore)
-        k = 1000
-        best_pscore_id = torch.from_numpy(pscore).topk(k)
-        # 按间隔选取, 以免同一位置处的元素过多
-        select_index = torch.arange(start=0, end=k, step=k // 20)
-        best_pscore_id = best_pscore_id[1][select_index]
-
-        target_szs = []
-        target_poss = []
-        confidences = []
-        target_sz_cp = target_sz.copy()
-        target_pos_cp = target_pos.copy()
-        for i in range(best_pscore_id.size(0)):
-            target = delta[:, best_pscore_id[i]] / scale_z
-            target_sz = target_sz_cp / scale_z
-            lr = penalty[best_pscore_id[i]] * score[best_pscore_id[i]] * p.lr
-
-            res_x = target[0] + target_pos_cp[0]
-            res_y = target[1] + target_pos_cp[1]
-            res_w = target_sz[0] * (1 - lr) + target[2] * lr
-            res_h = target_sz[1] * (1 - lr) + target[3] * lr
-            target_pos = np.array([res_x, res_y])
-            target_sz = np.array([res_w, res_h])
-
-            target_szs.append(target_sz)
-            target_poss.append(target_pos)
-
-            rect = np.concatenate([target_pos - target_sz // 2, target_sz])
-            z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
-            # wc_z = target_sz[0] + p.context_amount * sum(target_sz)
-            # hc_z = target_sz[1] + p.context_amount * sum(target_sz)
-            # s_z = round(np.sqrt(wc_z * hc_z))
-            # z_crop_candidate = get_subwindow_tracking(im, target_pos, p.exemplar_size,
-            #                                 s_z, avg_chans)
-
-            z_crop_candidate = net.featureExtract(z_crop_candidate).view(1,-1)
-            # z_crop_candidate = net.featureExtract(crop_image(im, rect, padding=10).unsqueeze(0))
-            confidences.append(net.memory.manager.measure_d.forward(net.memory.support_set, z_crop_candidate).max().item())
-            # viz.image(crop_image(im, rect, padding=10), opts={"title":"Score:{}".format(confidences[i])})
-        viz.line(Y=[np.mean(confidences)], X=[net.step], update='append', win='confidence')
-        net.step += 1
-
-        top_trust = np.argmax(confidences)
-        target_pos = target_poss[top_trust]
-        target_sz = target_szs[top_trust]
-        best_pscore_id = best_pscore_id[top_trust]
-    else:
-        target = delta[:, best_pscore_id] / scale_z
-        target_sz = target_sz / scale_z
-        lr = penalty[best_pscore_id] * score[best_pscore_id] * p.lr
+    def calc_pos_sz(score_id):
+        target = delta[:, score_id] / scale_z
+        target_sz_new = target_sz / scale_z
+        lr = penalty[score_id] * score[score_id] * p.lr
 
         res_x = target[0] + target_pos[0]
         res_y = target[1] + target_pos[1]
 
-        res_w = target_sz[0] * (1 - lr) + target[2] * lr
-        res_h = target_sz[1] * (1 - lr) + target[3] * lr
+        res_w = target_sz_new[0] * (1 - lr) + target[2] * lr
+        res_h = target_sz_new[1] * (1 - lr) + target[3] * lr
 
-        target_pos = np.array([res_x, res_y])
-        target_sz = np.array([res_w, res_h])
+        target_pos_new = np.array([res_x, res_y])
+        target_sz_new = np.array([res_w, res_h])
+        return target_pos_new, target_sz_new
+
+    # 计算得到k个得分最高样本的尺寸和位置
+    if(len(net.memory.manager.support_set_list) >= net.memory.store_amount) and debug:
+        top_score_id = best_pscore_id
+        pred_score = back_score.clone()
+
+        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
+        # 计算得分最高的边框
+        top_score_rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+
+        # best_pscore_id = np.argmax(pscore)
+        k = 50
+        best_pscore_id = torch.from_numpy(pscore).topk(k)[1]
+
+        confidences = []        # 用于储存所有高分样本与样本空间的置信度
+        candidates = []         # 用于储存所有高分样本
+
+        for i in range(best_pscore_id.size(0)):
+            target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id[i])
+
+            rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+            iou = overlap_ratio(rect, top_score_rect)
+            if iou > 0.1 and iou < 0.7:
+                continue
+            elif overlap_ratio(rect, top_score_rect) >= 0.7:
+                pred_score[1, best_pscore_id[i]-2:best_pscore_id[i]+2] = 1
+                pred_score[0, best_pscore_id[i]-2:best_pscore_id[i]+2] = 0
+                z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
+                z_crop_candidate = net.featureExtract(z_crop_candidate)
+
+            else:
+                pred_score[1, best_pscore_id[i]-4:best_pscore_id[i]+4] = 0
+                pred_score[0, best_pscore_id[i]-4:best_pscore_id[i]+4] = 1
+                # 可视化，看看修改的效果
+                # a = pred_score.data[1, :].cpu().numpy()
+                # a = a.reshape(5, 19, 19)
+                # viz.heatmap(a.mean(0), win="Pred Modified", opts={"title":"Modified Pscore"})
+                z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
+                candidates.append(z_crop_candidate)
+                z_crop_candidate = net.featureExtract(z_crop_candidate)     # .view(1,-1)
+
+
+        if len(candidates) > 0:
+            # 更新网络
+            pred_score[1, top_score_id-4:top_score_id+4] = 1
+            pred_score[0, top_score_id-4:top_score_id+4] = 0
+            loss = net.update_loss(pred_score, back_score)
+
+            net.update_optimizer.zero_grad()
+            loss.backward()
+            net.update_optimizer.step()
+
+        
+
+        # top_trust = np.argmax(confidences)
+        
+        best_pscore_id = top_score_id       # best_pscore_id[top_trust]
+        target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
+    else:
+        target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
 
     # 更新支撑样本集合
-    rect = np.concatenate([target_pos - target_sz // 2, target_sz])
+    rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
     gt = crop_image(im, rect, img_size=127, padding=5).unsqueeze(0)
-    # wc_z = target_sz[0] + p.context_amount * sum(target_sz)
-    # hc_z = target_sz[1] + p.context_amount * sum(target_sz)
-    # s_z = round(np.sqrt(wc_z * hc_z))
-    # gt = get_subwindow_tracking(im, target_pos, p.exemplar_size,
-    #                                           s_z, avg_chans)
     viz.image(gt.squeeze(), win="Current Result")
 
     z_crop_gt = net.featureExtract(gt).view(1,-1)
     net.memory.insert_support_gt(z_crop_gt, gt)
 
-    return target_pos, target_sz, score[best_pscore_id]
+    return target_pos_new, target_sz_new, score[best_pscore_id]
 
 # 初始化跟踪器网络
 def SiamRPN_init(im, target_pos_init, target_sz_init, net):
@@ -222,9 +231,9 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
                                     s_z, avg_chans)
     z = Variable(z_crop.unsqueeze(0))
 
-    # 将第一帧的目标送入到内容管理器中, 以监督内容管理器的质量
-    rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
-    z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
+    # # 将第一帧的目标送入到内容管理器中, 以监督内容管理器的质量
+    # rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
+    # z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
 
     net.memory.insert_init_gt(net.featureExtract(z_crop_candidate))
 
@@ -247,6 +256,7 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     window = np.tile(window.flatten(), p.anchor_num)
     state['window'] = window
 
+    init_update_net(net, im, target_pos, target_sz)
     return state
 
 # 跟踪
@@ -285,3 +295,7 @@ def SiamRPN_track(state, im):
     state['target_sz'] = target_sz_new
     state['score'] = score
     return state
+
+
+def init_update_net(net, samples):
+    pass

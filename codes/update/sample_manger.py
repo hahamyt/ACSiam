@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torchvision
 import visdom
-from codes.update.updatenet import DistanceNetwork
+from update.updatenet import DistanceNetwork
 
 viz = visdom.Visdom()
 

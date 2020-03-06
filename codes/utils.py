@@ -144,8 +144,8 @@ def load_net_weight(net, weight):
             # print(k, weight[k].shape)
     net.load_state_dict(model_dict)
     net.requires_grad_(False)
-    net.update.requires_grad_(True)
-    net.conv_cls1.requires_grad_(True)
+    # net.update.requires_grad_(True)
+    # net.conv_cls1.requires_grad_(True)
     net.conv_cls2.requires_grad_(True)
     # net.merge.requires_grad_(True)
     return net
