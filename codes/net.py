@@ -50,13 +50,14 @@ class SiamRPN(nn.Module):
 
         # 用于推理的更新网络
         self.update = nn.Sequential(nn.Conv2d(feat_in, feature_out, 3),
-                                    torch.nn.Tanh(),
-                                    nn.Conv2d(feature_out, feature_out, 1))
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv2d(feature_out, 1, 3),
+                                    nn.MaxPool2d(2)
+                                    )
 
-        # self.update = MatchingNetwork()
         self.update_loss = torch.nn.MSELoss()
-        self.tmple_loss = torch.nn.CrossEntropyLoss()
-        self.cls_optimizer = torch.optim.SGD(self.conv_cls2.parameters(), lr = 0.01, momentum=0.9)
+        self.tmple_loss = torch.nn.MSELoss()
+        self.cls_optimizer = torch.optim.Adam(self.conv_cls2.parameters(), lr = 0.001) # , momentum=0.9)
         self.update_optimizer = HessianFree(self.update.parameters(), use_gnm=True, verbose=False)
 
         # 原来的算法是,在第一帧直接计算一次kernel,现在我们引入一个LSTM网络,利用存储在Memory中的时序训练样本
@@ -68,6 +69,8 @@ class SiamRPN(nn.Module):
         # 3, 边框回归的组件与原来保持一致,这里不做变化
         self.cls1_kernel = []
         self.cfg = {}
+
+        self.current_frame = 0
 
         self.step = 0
         self.step2 = 0

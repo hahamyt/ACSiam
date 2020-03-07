@@ -3,10 +3,11 @@ import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
 import cv2
-from torchvision.transforms import Resize, Compose
+import Augmentor
+from torchvision.transforms import Resize, Compose, transforms
 import torchvision.models as models
 from update.sample_manger import samples_manager
-
+from utils import SampleGenerator, gen_bboxes, crop_image, overlap_ratio
 
 class Memory():
     def __init__(self, amount):
@@ -14,9 +15,23 @@ class Memory():
         # 用于存储离散的样本,便于操作
         self.support_set_list = []
         self.support_set = None
-        self.featureExtractor = models.squeezenet1_0(pretrained=True).features
+        # self.featureExtractor = models.squeezenet1_0(pretrained=True).features
         self.manager = samples_manager(amount)
         self.neg_set = []
+        p = Augmentor.Pipeline()
+        p.rotate(probability=0.1, max_right_rotation=10, max_left_rotation=0)
+        p.random_distortion(probability=0.1, grid_width=2, grid_height=2, magnitude=4)
+        p.flip_left_right(probability=0.2)
+        p.flip_top_bottom(probability=0.1)
+        p.random_erasing(probability=0.01, rectangle_area=0.2)
+        p.flip_random(probability=0.1)
+        self.transform = transforms.Compose([
+            p.torch_transform(),
+            transforms.ToTensor(),
+        ])
+
+        self.pos_samples = []
+        self.neg_samples = []
 
     def insert_support_gt(self, feat, gt):
         # with torch.no_grad():
@@ -34,6 +49,55 @@ class Memory():
         if len(self.neg_set) >= self.store_amount:
             self.neg_set.__delitem__(0)
         self.neg_set.append(neg_samples)
+
+    def sample_boxes(self, im, bbox):
+        self.size = (im.shape[1], im.shape[0])
+        # for update
+        self.pos_generator = SampleGenerator('gaussian', self.size, 0.1, 1.3)
+        self.neg_generator = SampleGenerator('uniform', self.size, 2, 1.3)
+
+        # generate bounding box rect
+        pos_rects = gen_bboxes(SampleGenerator('gaussian', self.size, 0.1, 1.3),
+                               bbox, 200, [0.7, 1])
+
+        overlap_pos = [0.7, 1]
+        while len(pos_rects) == 0 and overlap_pos[0] > 0.3:
+            overlap_pos[0] -= 0.1
+            pos_rects = gen_bboxes(SampleGenerator('gaussian', self.size, 0.1, 1.3),
+                                   bbox, 500, overlap_pos)
+
+        neg_rects = np.random.permutation(np.concatenate([
+            gen_bboxes(SampleGenerator('uniform', self.size, 1, 1.6),
+                       bbox, 2000, [0, 0.3])]))
+        neg_rects = np.random.permutation(neg_rects)
+
+        # Extract pos/neg features
+        pos_regions = self.extract_regions(im, pos_rects)
+        neg_regions = self.extract_regions(im, neg_rects)
+
+        return pos_regions, neg_regions
+
+    # extract frames' regions of every rect
+    def extract_regions(self, frame, rects, toTensor=True):
+        regions = []
+        for r in rects:
+            if toTensor:
+                regions.append(crop_image(frame, r, img_size=127, padding=0).unsqueeze(0))
+            else:
+                regions.append(crop_image(frame, r, img_size=127, padding=0).unsqueeze(0))
+        regions = torch.cat(regions)
+        return regions
+
+
+
+
+
+
+
+
+
+
+
 
 class ConvLSTMCell(nn.Module):
 

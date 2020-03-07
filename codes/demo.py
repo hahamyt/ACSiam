@@ -81,7 +81,7 @@ for f, image_file in enumerate(image_files):
     #     net.update_kernel()
     iou = overlap_ratio(res, gts[f])
     all_ious.append(iou)
-
+    net.current_frame += 1
     # if iou < 0.1:
     #     print("跟踪失败")
 
