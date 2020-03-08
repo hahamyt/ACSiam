@@ -30,8 +30,22 @@ class Memory():
             transforms.ToTensor(),
         ])
 
+        self.true_scores = []       # 在跟踪过程中， 根据IOU得到的score
+        self.fake_scores = []       # 在跟踪过程中，由cls2得到的score
+
         self.pos_samples = []
         self.neg_samples = []
+    
+    def insert_fake_scores(self, fake_score):
+        if len(self.fake_scores) >= self.store_amount:
+            self.fake_scores.__delitem__(0)
+        self.fake_scores.append(fake_score)
+
+    def insert_true_scores(self, true_score):
+        if len(self.true_scores) >= self.store_amount:
+            self.true_scores.__delitem__(0)
+        self.true_scores.append(true_score)
+
 
     def insert_support_gt(self, feat, gt):
         # with torch.no_grad():

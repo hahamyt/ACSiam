@@ -54,21 +54,28 @@ class SiamRPN(nn.Module):
                                     nn.Conv2d(feature_out, 1, 3),
                                     nn.MaxPool2d(2)
                                     )
-
-        self.update_loss = torch.nn.MSELoss()
-        self.tmple_loss = torch.nn.MSELoss()
-        self.cls_optimizer = torch.optim.Adam(self.conv_cls2.parameters(), lr = 0.001) # , momentum=0.9)
-        self.update_optimizer = HessianFree(self.update.parameters(), use_gnm=True, verbose=False)
-
+        self.discriminator = nn.Sequential(
+            nn.Linear(3610, 256, 3),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 1)
+        )
+        # self.update_loss = torch.nn.MSELoss()
+        # self.tmple_loss = torch.nn.MSELoss()
+        # self.cls_optimizer = torch.optim.RMSprop(self.conv_cls2.parameters(), lr = 0.001) # , momentum=0.9)
+        # self.update_optimizer = HessianFree(self.update.parameters(), use_gnm=True, verbose=False)
+        
+        self.generator_optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, self.conv_cls2.parameters()), lr = 0.001)
+        self.discriminator_optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, self.discriminator.parameters()), lr=0.01)
         # 原来的算法是,在第一帧直接计算一次kernel,现在我们引入一个LSTM网络,利用存储在Memory中的时序训练样本
         # 推理出kernel
         # 1, 因此先定义一个Memory组件: amount 表示的是存储时序的数目,这里取值为3
-        self.memory = Memory(amount=10)
+        self.memory = Memory(amount=1000)
         # 2, 定义embedded的集合
         self.r1_kernel = []
         # 3, 边框回归的组件与原来保持一致,这里不做变化
         self.cls1_kernel = []
         self.cfg = {}
+
 
         self.current_frame = 0
 
@@ -100,6 +107,13 @@ class SiamRPN(nn.Module):
         kernel_size = r1_kernel_raw.data.size()[-1]
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
+    def freeze_params(self, model):
+        for name, p in model.named_parameters():
+            p.requires_grad = False
+
+    def unfreeze_params(self, model):
+        for name, p in model.named_parameters():
+            p.requires_grad = True
 
     # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
     def update_kernel(self):

@@ -72,21 +72,13 @@ class TrackerConfig(object):
 # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
 def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scale_z, p):
     delta, score = net(x_crop)
-    # print("方差:", score.squeeze(0).mean(0).mean().item() / score.squeeze(0).mean(0).var().item())
-    # 实时显示得分的变化
-    # background_score = score[:, :5, :, :].squeeze()
-    # target_score = score[:, 5:, :, :].squeeze()
-    # diff_score = (target_score - background_score)
-    # viz.heatmap(diff_score.mean(0), opts=dict(title='diff_score',
-    #                                           caption='diff_score.'), win="diff_score")
     # 用于边框回归的量,表示的是分别对5中anchor进行回归, 其结构展开来应该是(4, 5, 19, 19)
     delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
     # 目标打分的量, 表示的是对5种anchor分别处理下的打分的量,其结构展开来应该为(5, 19, 19)
     back_score = F.softmax(score.permute(1, 2, 3, 0).contiguous().view(2, -1), dim=0)
+
     score = back_score.data[1, :].cpu().numpy()
-    b = score.reshape(5, 19, 19)
-    # b = np.concatenate(b)
-    viz.heatmap(b.mean(0), win="Pscore", opts={"title":"Pscore"})
+
     delta[0, :] = delta[0, :] * p.anchor[:, 2] + p.anchor[:, 0]
     delta[1, :] = delta[1, :] * p.anchor[:, 3] + p.anchor[:, 1]
     delta[2, :] = np.exp(delta[2, :]) * p.anchor[:, 2]
@@ -117,6 +109,8 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
    
     # 返回前4个最大值的索引
     best_pscore_id = np.argmax(pscore)
+    top_score_id = best_pscore_id
+    pred_score = back_score.clone()
 
     def calc_pos_sz(score_id):
         target = delta[:, score_id] / scale_z
@@ -134,76 +128,52 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
         return target_pos_new, target_sz_new
 
     # 计算得到k个得分最高样本的尺寸和位置
-    if(len(net.memory.manager.support_set_list) >= net.memory.store_amount) and debug:
-        top_score_id = best_pscore_id
-        pred_score = back_score.clone()
-
+    if debug:# (len(net.memory.manager.support_set_list) >= net.memory.store_amount) and debug:
         target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
         # 计算得分最高的边框
         top_score_rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
 
         # best_pscore_id = np.argmax(pscore)
-        k = 100
-        best_pscore_id = torch.from_numpy(pscore).topk(k)[1]
+        k = 1805
+        best_scores_id = torch.from_numpy(pscore).topk(k)[1]
 
-        confidences = []        # 用于储存所有高分样本与样本空间的置信度
-        candidates = []         # 用于储存所有高分样本
-
-        for i in range(best_pscore_id.size(0)):
-            target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id[i])
+        for i in range(best_scores_id.size(0)):
+            target_pos_new, target_sz_new = calc_pos_sz(best_scores_id[i])
 
             rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
             iou = overlap_ratio(rect, top_score_rect)
-            if iou > 0.1 and iou < 0.7:
-                continue
-            elif iou >= 0.8:
-                pred_score[1, best_pscore_id[i]-2:best_pscore_id[i]+2] = 1
-                pred_score[0, best_pscore_id[i]-2:best_pscore_id[i]+2] = 0
-                z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
-                z_crop_candidate = net.featureExtract(z_crop_candidate)
-                print("IOU: {0}, SCORE: {1}".format(iou, net.update(z_crop_candidate).squeeze().item()))
-                net.memory.pos_samples.append(z_crop_candidate)
-            elif iou < 0.01:
-                pred_score[1, best_pscore_id[i]-4:best_pscore_id[i]+4] = 0
-                pred_score[0, best_pscore_id[i]-4:best_pscore_id[i]+4] = 1
-                # 可视化，看看修改的效果
-                a = pred_score.data[1, :].cpu().numpy()
-                a = a.reshape(5, 19, 19)
-                viz.heatmap(a.mean(0), win="Pred Modified", opts={"title":"Modified Pscore"})
-                z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
-                candidates.append(z_crop_candidate)
-                z_crop_candidate = net.featureExtract(z_crop_candidate)     # .view(1,-1)
-                net.memory.neg_samples.append(z_crop_candidate)
-                print("IOU: {0}, SCORE: {1}".format(iou, net.update(z_crop_candidate).squeeze().item()))
+
+            if iou >= 0.8:
+                pred_score[1, best_scores_id[i]] = iou.item()
+                pred_score[0, best_scores_id[i]] = 1-iou.item()
+            # elif iou < 0.01:
+            #     pred_score[1, best_scores_id[i]] = 1-iou.item()
+            #     pred_score[0, best_scores_id[i]] = iou.item()
                 
-        if len(net.memory.neg_samples) >= 100 and net.current_frame % 20 == 0:
-            pos, neg = torch.cat(net.memory.pos_samples), torch.cat(net.memory.neg_samples)
-            # a = torchvision.utils.make_grid(neg, nrow=10)
-            # viz.image(a)
-            train_updatenet(net, pos, neg, iter=15)
-        if len(candidates) > 0 and net.current_frame % 20 == 0:
-            # 更新网络
-            pred_score[1, top_score_id:top_score_i] = 1
-            pred_score[0, top_score_id:top_score_id] = 0
-            loss = net.tmple_loss(pred_score, back_score)
+    # 可视化，看看修改的效果
+    a = pred_score.data[1, :].cpu().numpy()
+    a = a.reshape(5, 19, 19)
+    viz.heatmap(a.mean(0), win="Pred Modified", opts={"title":"Modified Pscore"})
+                
+    target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
+    #　添加用于对抗训练的样本
+    net.memory.insert_fake_scores(back_score)
+    net.memory.insert_true_scores(pred_score)
+    if net.current_frame % 10 == 0:
+        net.freeze_params(net.conv_cls2)
+        net.unfreeze_params(net.discriminator)
+        train_gan(net)
+        if net.current_frame > 200 and net.current_frame % 30:
+            net.unfreeze_params(net.conv_cls2)
+            net.freeze_params(net.discriminator)
 
-            net.cls_optimizer.zero_grad()
-            loss.backward()
-            net.cls_optimizer.step()
-
-        # top_trust = np.argmax(confidences)
-        best_pscore_id = top_score_id       # best_pscore_id[top_trust]
-        target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
-    else:
-        target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
-
-    # 更新支撑样本集合
-    rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-    gt = crop_image(im, rect, img_size=127, padding=5).unsqueeze(0)
-    viz.image(gt.squeeze(), win="Current Result")
-
-    z_crop_gt = net.featureExtract(gt).view(1,-1)
-    net.memory.insert_support_gt(z_crop_gt, gt)
+            gen_scores = torch.stack(net.memory.fake_scores).view(-1, 3610)
+            
+            net.generator_optimizer.zero_grad()
+            loss_G = -torch.mean(net.discriminator(gen_scores))
+            loss_G.backward(retain_graph=True)
+            net.generator_optimizer.step()
+            print("G Loss:{}".format(loss_G.item()))
 
     return target_pos_new, target_sz_new, score[best_pscore_id]
 
@@ -262,10 +232,10 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     state['window'] = window
 
     # 第一帧，初始化分类器
-    rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
-    pos_regions, neg_regions = net.memory.sample_boxes(im, rect)
-    pos_features, neg_features = net.featureExtract(pos_regions), net.featureExtract(neg_regions)
-    train_updatenet(net, pos_features, neg_features)
+    # rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
+    # pos_regions, neg_regions = net.memory.sample_boxes(im, rect)
+    # pos_features, neg_features = net.featureExtract(pos_regions), net.featureExtract(neg_regions)
+    # train_updatenet(net, pos_features, neg_features)
     return state
 
 # 跟踪
@@ -392,3 +362,19 @@ def train_updatenet(net, pos_feats, neg_feats, iter=50):
                 net.update_optimizer.step(closure, M_inv=None)    
             '''
             
+def train_gan(net):
+    clip_value = 0.01
+    fake_data = torch.stack(net.memory.fake_scores).view(-1, 3610)
+    true_data = torch.stack(net.memory.true_scores).view(-1, 3610)
+    # 计算WGAN误差函数
+    loss_D = -torch.mean(net.discriminator(true_data)) + torch.mean(net.discriminator(fake_data))
+
+    net.discriminator_optimizer.zero_grad()
+    loss_D.backward(retain_graph=True)
+    net.discriminator_optimizer.step()
+    print("D Loss:{}".format(loss_D.item()))
+    # clip weight
+    # Clip weights of discriminator
+    for p in net.discriminator.parameters():
+        p.data.clamp_(-clip_value, clip_value)
+    
