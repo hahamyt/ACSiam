@@ -164,7 +164,7 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
                     print("IOU: {0}, TRACKER_SCORE: {1}, UPDATE_SCORE: {2}".format(iou[0], tracker_score, update_score))
                     # IOU我当做是真实的标签， tracker_score我当做是生成样本的标签，update_score表示的是判别网络的输出
                     # # 更新网络
-                    if update_score / tracker_score > 100:
+                    if update_score / tracker_score / > 100:
                     #     train_updatenet(net, iter=10)
                         net.memory.insert_pos_sample(z_crop_candidate)
 
