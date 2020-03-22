@@ -8,13 +8,18 @@ import torch
 from torch.autograd import Variable
 import torch.nn.functional as F
 import visdom
+import cv2
+import PIL.Image as Image
 import torchvision
+import torchvision.transforms as T
 from memory_profiler import profile # 内存占用分析插件
 from update.updatenet import MatchingNetwork
 viz = visdom.Visdom()
 debug = True
-
 from utils import get_subwindow_tracking, get_search_region_target, crop_image, overlap_ratio, shuffleTensor
+import matplotlib.pyplot as plt
+
+loader = T.Compose([T.ToTensor()]) 
 
 def generate_anchor(total_stride, scales, ratios, score_size):
     anchor_num = len(ratios) * len(scales)
@@ -71,18 +76,22 @@ class TrackerConfig(object):
 # 计算目标的得分图
 # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
 def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scale_z, p):
-    delta, score = net(x_crop)
-    # 用于边框回归的量,表示的是分别对5中anchor进行回归, 其结构展开来应该是(4, 5, 19, 19)
-    delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
-    # 目标打分的量, 表示的是对5种anchor分别处理下的打分的量,其结构展开来应该为(5, 19, 19)
-    back_score = F.softmax(score.permute(1, 2, 3, 0).contiguous().view(2, -1), dim=0)
 
-    score = back_score.data[1, :].cpu().numpy()
+    def calc_score():
+        delta, score = net(x_crop)
+        # 用于边框回归的量,表示的是分别对5中anchor进行回归, 其结构展开来应该是(4, 5, 19, 19)
+        delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
+        # 目标打分的量, 表示的是对5种anchor分别处理下的打分的量,其结构展开来应该为(5, 19, 19)
+        back_score = F.softmax(score.permute(1, 2, 3, 0).contiguous().view(2, -1), dim=0)
+        score = back_score.data[1, :].cpu().numpy()
+        b = score.reshape(5, 19, 19)
+        viz.heatmap(b.mean(0), win="Pscore", opts={"title":"Pscore"})
 
-    delta[0, :] = delta[0, :] * p.anchor[:, 2] + p.anchor[:, 0]
-    delta[1, :] = delta[1, :] * p.anchor[:, 3] + p.anchor[:, 1]
-    delta[2, :] = np.exp(delta[2, :]) * p.anchor[:, 2]
-    delta[3, :] = np.exp(delta[3, :]) * p.anchor[:, 3]
+        delta[0, :] = delta[0, :] * p.anchor[:, 2] + p.anchor[:, 0]
+        delta[1, :] = delta[1, :] * p.anchor[:, 3] + p.anchor[:, 1]
+        delta[2, :] = np.exp(delta[2, :]) * p.anchor[:, 2]
+        delta[3, :] = np.exp(delta[3, :]) * p.anchor[:, 3]
+        return delta, score, back_score
 
     def change(r):
         return np.maximum(r, 1./r)
@@ -96,7 +105,8 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
         pad = (wh[0] + wh[1]) * 0.5
         sz2 = (wh[0] + pad) * (wh[1] + pad)
         return np.sqrt(sz2)
-
+    
+    delta, score, back_score = calc_score()
     # size penalty
     s_c = change(sz(delta[2, :], delta[3, :]) / (sz_wh(target_sz)))  # scale penalty
     r_c = change((target_sz[0] / target_sz[1]) / (delta[2, :] / delta[3, :]))  # ratio penalty
@@ -107,11 +117,9 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
     # window float
     pscore = pscore * (1 - p.window_influence) + window * p.window_influence
    
-    # 返回前4个最大值的索引
     best_pscore_id = np.argmax(pscore)
     top_score_id = best_pscore_id
-    pred_score = back_score.clone()
-
+    
     def calc_pos_sz(score_id):
         target = delta[:, score_id] / scale_z
         target_sz_new = target_sz / scale_z
@@ -128,52 +136,87 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
         return target_pos_new, target_sz_new
 
     # 计算得到k个得分最高样本的尺寸和位置
-    if debug:# (len(net.memory.manager.support_set_list) >= net.memory.store_amount) and debug:
-        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
-        # 计算得分最高的边框
-        top_score_rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+    if(len(net.memory.pos_samples) >= net.memory.store_amount) and debug:
+        pred_score = back_score.clone()
 
-        # best_pscore_id = np.argmax(pscore)
-        k = 1805
-        best_scores_id = torch.from_numpy(pscore).topk(k)[1]
+        previous_rect = np.concatenate([target_pos - target_sz // 2, target_sz])
 
-        for i in range(best_scores_id.size(0)):
-            target_pos_new, target_sz_new = calc_pos_sz(best_scores_id[i])
+        for best_pscore_id in range(pred_score.size(1)):
+            target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
 
             rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-            iou = overlap_ratio(rect, top_score_rect)
+            iou = overlap_ratio(rect, previous_rect)
+            if iou >= 0.3:
+                z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
+                # z_crop_candidate = net.featureExtract(z_crop_candidate)
+                update_score = net.update(z_crop_candidate).squeeze().item()
+                tracker_score = pred_score[1, best_pscore_id].item()
 
-            if iou >= 0.8:
-                pred_score[1, best_scores_id[i]] = iou.item()
-                pred_score[0, best_scores_id[i]] = 1-iou.item()
-            # elif iou < 0.01:
-            #     pred_score[1, best_scores_id[i]] = 1-iou.item()
-            #     pred_score[0, best_scores_id[i]] = iou.item()
-                
-    # 可视化，看看修改的效果
-    a = pred_score.data[1, :].cpu().numpy()
-    a = a.reshape(5, 19, 19)
-    viz.heatmap(a.mean(0), win="Pred Modified", opts={"title":"Modified Pscore"})
-                
-    target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
-    #　添加用于对抗训练的样本
-    net.memory.insert_fake_scores(back_score)
-    net.memory.insert_true_scores(pred_score)
-    if net.current_frame % 10 == 0:
-        net.freeze_params(net.conv_cls2)
-        net.unfreeze_params(net.discriminator)
-        train_gan(net)
-        if net.current_frame > 200 and net.current_frame % 30:
-            net.unfreeze_params(net.conv_cls2)
-            net.freeze_params(net.discriminator)
+                # viz.image(z_crop_candidate.squeeze(0))
 
-            gen_scores = torch.stack(net.memory.fake_scores).view(-1, 3610)
+                print("IOU: {0}, TRACKER_SCORE: {1}, UPDATE_SCORE: {2}".format(iou[0], tracker_score, update_score))
+                # IOU我当做是真实的标签， tracker_score我当做是生成样本的标签，update_score表示的是判别网络的输出
+                # # 更新网络
+                if update_score < tracker_score:
+                #     train_updatenet(net, iter=10)
+                    net.memory.insert_pos_sample(z_crop_candidate)
+
+            else:
+                z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
+                # z_crop_candidate = net.featureExtract(z_crop_candidate)     # .view(1,-1)
+                
+                update_score = net.update(z_crop_candidate).squeeze().item()
+                tracker_score = pred_score[1, best_pscore_id].item()
+                # viz.image(z_crop_candidate.squeeze(0))
+                print("IOU: {0}, TRACKER_SCORE: {1}, UPDATE_SCORE: {2}".format(iou[0], tracker_score, update_score))
+                # 更新网络
+                if tracker_score > update_score:
+                #     train_updatenet(net, iter=10)
+                    net.memory.insert_neg_sample(z_crop_candidate)
+
+        if net.current_frame >= 30 and net.current_frame % 10 == 0:
+            train_updatenet(net, iter=1)
+
+            candidates = []
+            vis = []
+            k = 200
+            for i in back_score[1, :].topk(k)[1].data:
+                target_pos_new, target_sz_new = calc_pos_sz(i)
+                rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+                z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
+                
+                vis.append(z_crop_candidate.squeeze())
+                # z_crop_candidate = net.featureExtract(z_crop_candidate)
+                candidates.append(z_crop_candidate)
+                # print(i)
+            # a = torchvision.utils.make_grid(torch.stack(vis), nrow=10)
+            # viz.image(a)
             
-            net.generator_optimizer.zero_grad()
-            loss_G = -torch.mean(net.discriminator(gen_scores))
-            loss_G.backward(retain_graph=True)
-            net.generator_optimizer.step()
-            print("G Loss:{}".format(loss_G.item()))
+            output = net.update(torch.cat(candidates)).squeeze()
+            # k = 0
+            # for im in vis:
+            #     viz.image(im, opts={"title":"{}".format(output.data[k].item())})
+            #     k = k + 1
+
+            pred_score[1, back_score[1, :].topk(k)[1].data] = output # torch.clamp(output, min=0)
+            pred_score[0, back_score[1, :].topk(k)[1].data] = 1 - output # torch.clamp(output, min=0)
+
+            viz.heatmap(pred_score[1, :].reshape(5, 19, 19).mean(0), win="Modified Pscore", opts={"title":"Modified Pscore"})
+            
+            # 更新网络
+            loss = net.tmple_loss(pred_score, back_score)
+            
+            net.cls_optimizer.zero_grad() 
+            loss.backward()
+            net.cls_optimizer.step()
+            
+        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
+    else:
+        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
+        rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
+        z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
+        # z_crop_candidate = net.featureExtract(z_crop_candidate)
+        net.memory.insert_pos_sample(z_crop_candidate)
 
     return target_pos_new, target_sz_new, score[best_pscore_id]
 
@@ -207,10 +250,10 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     z = Variable(z_crop.unsqueeze(0))
 
     # # 将第一帧的目标送入到内容管理器中, 以监督内容管理器的质量
-    rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
-    z_crop_candidate = crop_image(im, rect, img_size=127, padding=10).unsqueeze(0)
+    # rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
+    # z_crop_candidate = crop_image(im, rect, img_size=127, padding=0)
 
-    net.memory.insert_init_gt(net.featureExtract(z_crop_candidate))
+    # net.memory.insert_init_gt(net.featureExtract(torch.from_numpy(z_crop_candidate)))
 
     state['p'] = p
     state['net'] = net
@@ -232,10 +275,13 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     state['window'] = window
 
     # 第一帧，初始化分类器
-    # rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
-    # pos_regions, neg_regions = net.memory.sample_boxes(im, rect)
+    rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
+    pos_regions, neg_regions = net.memory.sample_boxes(im, rect)
     # pos_features, neg_features = net.featureExtract(pos_regions), net.featureExtract(neg_regions)
-    # train_updatenet(net, pos_features, neg_features)
+    net.memory.insert_pos_sample(pos_regions[:50])
+    net.memory.insert_neg_sample(neg_regions[:50])
+    
+    train_updatenet(net, pos_regions, neg_regions)
     return state
 
 # 跟踪
@@ -276,7 +322,10 @@ def SiamRPN_track(state, im):
     return state
 
 
-def train_updatenet(net, pos_feats, neg_feats, iter=50):    
+def train_updatenet(net, pos_feats=None, neg_feats=None, iter=1):
+    if pos_feats == None:
+        pos_feats = torch.cat(net.memory.pos_samples)
+        neg_feats = torch.cat(net.memory.neg_samples)
     net.update.train()
     batch_pos = 32
     batch_neg = 96
@@ -326,55 +375,39 @@ def train_updatenet(net, pos_feats, neg_feats, iter=50):
             batch_neg_feats = batch_neg_feats[top_idx]
             net.update.train()
             feature, target = shuffleTensor(batch_pos_feats, batch_neg_feats)
-            # score = net.update(feature).squeeze()
-            # loss = net.update_loss(score, target)
+            score = net.update(feature).squeeze()
+            loss = net.update_loss(score, target)
 
-            # print("Epoch:{0}, Loss:{1}.".format(i, loss.item()))
+            print("Epoch:{0}, Loss:{1}.".format(i, loss.item()))
             
-            # net.update_optimizer.zero_grad()
-            # loss.backward(retain_graph=True)
-            # net.update_optimizer.step()
-            def closure():
-                score = net.update(feature).squeeze()
-                loss = net.update_loss(score, target)
-                print(loss.item())
-                loss.backward(create_graph=True)
-                return loss, score
+            net.update_optimizer.zero_grad()
+            loss.backward(retain_graph=True)
+            net.update_optimizer.step()
 
-            for i in range(10):
-                print("Epoch {}".format(i))
-                net.update_optimizer.zero_grad()
-                net.update_optimizer.step(closure, M_inv=None)  
+            # print("Epoch {}".format(i))
+            # def closure():
+            #     score = net.update(feature).squeeze()
+            #     loss = net.update_loss(score, target)
+            #     print(loss.item())
+            #     loss.backward(retain_graph=True)
+            #     return loss, score
 
-            '''
-            net.update.train()
-            feature, target = shuffleTensor(pos_feats, neg_feats)
-            def closure():
-                score = net.update(feature).squeeze()
-                loss = net.update_loss(score, target)
-                print(loss.item())
-                loss.backward(create_graph=True)
-                return loss, score
-
-            for i in range(10):
-                print("Epoch {}".format(i))
-                net.update_optimizer.zero_grad()
-                net.update_optimizer.step(closure, M_inv=None)    
-            '''
-            
-def train_gan(net):
-    clip_value = 0.01
-    fake_data = torch.stack(net.memory.fake_scores).view(-1, 3610)
-    true_data = torch.stack(net.memory.true_scores).view(-1, 3610)
-    # 计算WGAN误差函数
-    loss_D = -torch.mean(net.discriminator(true_data)) + torch.mean(net.discriminator(fake_data))
-
-    net.discriminator_optimizer.zero_grad()
-    loss_D.backward(retain_graph=True)
-    net.discriminator_optimizer.step()
-    print("D Loss:{}".format(loss_D.item()))
-    # clip weight
-    # Clip weights of discriminator
-    for p in net.discriminator.parameters():
-        p.data.clamp_(-clip_value, clip_value)
+            # for k in range(10):
+            #     net.update_optimizer.zero_grad()
+            #     net.update_optimizer.step(closure, M_inv=None)  
     
+    net.update.eval()
+            
+    # net.update.train()
+    # feature, target = shuffleTensor(pos_feats, neg_feats)
+    # def closure():
+    #     score = net.update(feature).squeeze()
+    #     loss = net.update_loss(score, target)
+    #     print(loss.item())
+    #     loss.backward(retain_graph=True)
+    #     return loss, score
+
+    # for i in range(10):
+    #     print("Epoch {}".format(i))
+    #     net.update_optimizer.zero_grad()
+    #     net.update_optimizer.step(closure, M_inv=None)    

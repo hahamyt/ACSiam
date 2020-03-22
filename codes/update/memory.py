@@ -21,31 +21,19 @@ class Memory():
         p = Augmentor.Pipeline()
         p.rotate(probability=0.1, max_right_rotation=10, max_left_rotation=0)
         p.random_distortion(probability=0.1, grid_width=2, grid_height=2, magnitude=4)
-        p.flip_left_right(probability=0.2)
+        p.flip_left_right(probability=0.1)
         p.flip_top_bottom(probability=0.1)
         p.random_erasing(probability=0.01, rectangle_area=0.2)
-        p.flip_random(probability=0.1)
+        # p.crop_random(probability=0.1, percentage_area=0.5)
+        p.flip_random(probability=0.01)
+
         self.transform = transforms.Compose([
             p.torch_transform(),
             transforms.ToTensor(),
         ])
 
-        self.true_scores = []       # 在跟踪过程中， 根据IOU得到的score
-        self.fake_scores = []       # 在跟踪过程中，由cls2得到的score
-
         self.pos_samples = []
         self.neg_samples = []
-    
-    def insert_fake_scores(self, fake_score):
-        if len(self.fake_scores) >= self.store_amount:
-            self.fake_scores.__delitem__(0)
-        self.fake_scores.append(fake_score)
-
-    def insert_true_scores(self, true_score):
-        if len(self.true_scores) >= self.store_amount:
-            self.true_scores.__delitem__(0)
-        self.true_scores.append(true_score)
-
 
     def insert_support_gt(self, feat, gt):
         # with torch.no_grad():
@@ -68,22 +56,17 @@ class Memory():
         self.size = (im.shape[1], im.shape[0])
         # for update
         self.pos_generator = SampleGenerator('gaussian', self.size, 0.1, 1.3)
-        self.neg_generator = SampleGenerator('uniform', self.size, 2, 1.3)
+        self.neg_generator = SampleGenerator('uniform', self.size, 1, 1.6)
 
         # generate bounding box rect
-        pos_rects = gen_bboxes(SampleGenerator('gaussian', self.size, 0.1, 1.3),
-                               bbox, 200, [0.7, 1])
+        pos_rects = gen_bboxes(self.pos_generator, bbox, 2000, [0.7, 1])
 
         overlap_pos = [0.7, 1]
         while len(pos_rects) == 0 and overlap_pos[0] > 0.3:
             overlap_pos[0] -= 0.1
-            pos_rects = gen_bboxes(SampleGenerator('gaussian', self.size, 0.1, 1.3),
-                                   bbox, 500, overlap_pos)
+            pos_rects = gen_bboxes(self.pos_generator, bbox, 2000, overlap_pos)
 
-        neg_rects = np.random.permutation(np.concatenate([
-            gen_bboxes(SampleGenerator('uniform', self.size, 1, 1.6),
-                       bbox, 2000, [0, 0.3])]))
-        neg_rects = np.random.permutation(neg_rects)
+        neg_rects = gen_bboxes(self.neg_generator, bbox, 2000, [0, 0.2])
 
         # Extract pos/neg features
         pos_regions = self.extract_regions(im, pos_rects)
@@ -96,12 +79,22 @@ class Memory():
         regions = []
         for r in rects:
             if toTensor:
-                regions.append(crop_image(frame, r, img_size=127, padding=0).unsqueeze(0))
+                tmp = crop_image(frame, r, padding=0)
+                regions.append(self.transform(tmp).unsqueeze(0))
             else:
-                regions.append(crop_image(frame, r, img_size=127, padding=0).unsqueeze(0))
+                regions.append(self.transform(crop_image(frame, r, padding=0)).unsqueeze(0))
         regions = torch.cat(regions)
         return regions
 
+    def insert_pos_sample(self, pos_feat):
+        if len(self.pos_samples) >= self.store_amount:
+            self.pos_samples.__delitem__(0)
+        self.pos_samples.append(pos_feat)
+
+    def insert_neg_sample(self, neg_feat):
+        if len(self.neg_samples) >= self.store_amount:
+            self.neg_samples.__delitem__(0)
+        self.neg_samples.append(neg_feat)
 
 
 

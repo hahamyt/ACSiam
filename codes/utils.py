@@ -4,6 +4,7 @@
 # Written by Qiang Wang (wangqiang2015 at ia.ac.cn)
 # --------------------------------------------------------
 import cv2
+from PIL import Image 
 import torch
 import torch.nn as nn
 import numpy as np
@@ -144,10 +145,13 @@ def load_net_weight(net, weight):
              'update.3.bias',
              'merge.weight',
              'merge.bias',
-             'discriminator.0.weight',
-             'discriminator.0.bias',
-             'discriminator.2.weight',
-             'discriminator.2.bias',]
+             'update.6.weight',
+             'update.6.bias',
+             'update.4.weight',
+             'update.4.bias',
+             'update.4.running_mean',
+             'update.4.running_var',
+             'update.4.num_batches_tracked']
     model_dict = net.state_dict()
     for k, v in net.state_dict().items():
         # print(k)
@@ -156,8 +160,7 @@ def load_net_weight(net, weight):
             # print(k, weight[k].shape)
     net.load_state_dict(model_dict)
     net.requires_grad_(False)
-    # net.update.requires_grad_(True)
-    net.discriminator.requires_grad_(True)
+    net.update.requires_grad_(True)
     # net.conv_cls1.requires_grad_(True)
     net.conv_cls2.requires_grad_(True)
     # net.merge.requires_grad_(True)
@@ -202,7 +205,7 @@ def get_search_region_target(search_region_shape, diff, target_sz_new):
     target = cv2.resize(target, (19, 19))
     return torch.from_numpy(target).requires_grad_(True)
 
-def crop_image(img, bbox, img_size=127, padding=0, valid=False):
+def crop_image(img, bbox, img_size=32, padding=0, valid=False):
     x, y, w, h = np.array(bbox, dtype='float32')
 
     half_w, half_h = w / 2, h / 2
@@ -239,9 +242,10 @@ def crop_image(img, bbox, img_size=127, padding=0, valid=False):
         cropped[min_y_val - min_y:max_y_val - min_y, min_x_val - min_x:max_x_val - min_x, :] \
             = img[min_y_val:max_y_val, min_x_val:max_x_val, :]
 
-    scaled = cv2.resize(cropped, (img_size, img_size)).astype(np.float32)
-    scaled = np.transpose(scaled, (2, 0, 1))
-    return torch.from_numpy(scaled)
+    scaled = cv2.resize(cropped, (img_size, img_size)) # .astype(np.float32)
+    # scaled = np.transpose(scaled, (2, 0, 1))
+    scaled = Image.fromarray(cv2.cvtColor(scaled, cv2.COLOR_BGR2RGB))
+    return scaled
 
 def gen_bboxes(generator, bbox, n, overlap_range=None, scale_range=None):
     if overlap_range is None and scale_range is None:
@@ -375,6 +379,6 @@ def shuffleTensor(pos_feats, neg_feats):
     np.random.set_state(state)
 
     feats = torch.from_numpy(feats)
-    targets[targets == 0] = -1
+    # targets[targets == 0] = -1
     targets = torch.from_numpy(targets).squeeze()
     return feats, targets
