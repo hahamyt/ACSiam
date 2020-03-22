@@ -21,10 +21,12 @@ class Memory():
         p = Augmentor.Pipeline()
         p.rotate(probability=0.1, max_right_rotation=10, max_left_rotation=0)
         p.random_distortion(probability=0.1, grid_width=2, grid_height=2, magnitude=4)
-        p.flip_left_right(probability=0.02)
+        p.flip_left_right(probability=0.1)
         p.flip_top_bottom(probability=0.1)
         p.random_erasing(probability=0.01, rectangle_area=0.2)
+        # p.crop_random(probability=0.1, percentage_area=0.5)
         p.flip_random(probability=0.01)
+
         self.transform = transforms.Compose([
             p.torch_transform(),
             transforms.ToTensor(),
@@ -57,14 +59,14 @@ class Memory():
         self.neg_generator = SampleGenerator('uniform', self.size, 1, 1.6)
 
         # generate bounding box rect
-        pos_rects = gen_bboxes(self.pos_generator, bbox, 200, [0.7, 1])
+        pos_rects = gen_bboxes(self.pos_generator, bbox, 2000, [0.7, 1])
 
         overlap_pos = [0.7, 1]
         while len(pos_rects) == 0 and overlap_pos[0] > 0.3:
             overlap_pos[0] -= 0.1
-            pos_rects = gen_bboxes(self.pos_generator, bbox, 200, overlap_pos)
+            pos_rects = gen_bboxes(self.pos_generator, bbox, 2000, overlap_pos)
 
-        neg_rects = gen_bboxes(self.neg_generator, bbox, 400, [0, 0.2])
+        neg_rects = gen_bboxes(self.neg_generator, bbox, 2000, [0, 0.2])
 
         # Extract pos/neg features
         pos_regions = self.extract_regions(im, pos_rects)

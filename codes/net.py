@@ -50,17 +50,20 @@ class SiamRPN(nn.Module):
         self.regress_adjust = nn.Conv2d(4*anchor, 4*anchor, 1)
 
         # 用于推理的更新网络 (W − K + 2P )/S + 1
-        self.update = nn.Sequential(nn.Conv2d(3, 256, kernel_size=5, stride=2), # N = (32 - 5 + 0) / 2 + 1 = 15
+        self.update = nn.Sequential(nn.Conv2d(3, 512, kernel_size=5, stride=2), # N = (32 - 5 + 0) / 2 + 1 = 15
+                                    nn.BatchNorm2d(512),
                                     nn.ReLU(inplace=True),
-                                    nn.Conv2d(256, 128, kernel_size=5, stride=2),# N = (15 - 5 + 0) / 2 + 1 = 6
+                                    nn.Conv2d(512, 256, kernel_size=5, stride=2),# N = (15 - 5 + 0) / 2 + 1 = 7
+                                    nn.BatchNorm2d(256),
                                     nn.ReLU(inplace=True),
-                                    nn.Conv2d(128, 1, kernel_size=5, stride=2),  # N = (7 - 5 + 0) / 2 + 1 = 2
+                                    nn.Conv2d(256, 1, kernel_size=5, stride=2),  # N = (7 - 5 + 0) / 2 + 1 = 2
                                     nn.Sigmoid())
         self.update.apply(self.weigth_init)
         self.update_loss = torch.nn.BCELoss()
         self.tmple_loss = torch.nn.MSELoss()
         self.cls_optimizer = torch.optim.RMSprop(self.conv_cls2.parameters(), lr = 0.001) # , momentum=0.9)
-        self.update_optimizer = torch.optim.Adam(self.update.parameters(), lr = 0.001) # use_gnm=True, verbose=False)
+        self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
+        
         # self.update_optimizer = HessianFree(self.update.parameters(), use_gnm=True, verbose=False)
 
         # 原来的算法是,在第一帧直接计算一次kernel,现在我们引入一个LSTM网络,利用存储在Memory中的时序训练样本

@@ -148,7 +148,10 @@ def load_net_weight(net, weight):
              'update.6.weight',
              'update.6.bias',
              'update.4.weight',
-             'update.4.bias']
+             'update.4.bias',
+             'update.4.running_mean',
+             'update.4.running_var',
+             'update.4.num_batches_tracked']
     model_dict = net.state_dict()
     for k, v in net.state_dict().items():
         # print(k)
