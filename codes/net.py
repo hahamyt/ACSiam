@@ -55,12 +55,23 @@ class SiamRPN(nn.Module):
         self.cls1_kernel = []
         self.cfg = {}
 
-        self.attention = ChannelSELayer(feature_out)
-
     def forward(self, x, exampler):
+        """
+        :param: exampler表示的是当前帧的exampler
+        :param: x表示的是搜索区域
+        """
+        exampler = self.cls_kernel_calc(exampler)
         x_f = self.featureExtract(x) # 这里的x_f表示的是搜索区域， 我们应该加权的是什么特征？应该是目标的特征吧
         return self.regress_adjust(F.conv2d(self.conv_r2(x_f), self.r1_kernel)), \
-               F.conv2d(self.conv_cls2(x_f), self.attention.forward(self.cls1_kernel, exampler))
+               F.conv2d(self.conv_cls2(x_f), self.attention.forward(exampler))
+
+    def cls_kernel_calc(self, Y):
+        z_f = self.featureExtract(Y)
+        # 初始化滤波器,包括边框回归的和跟踪打分的
+        cls1_kernel_raw = self.conv_cls1(z_f)
+        kernel_size = cls1_kernel_raw.data.size()[-1]
+        current_cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
+        return current_cls1_kernel
 
     def featextract(self, x):
         x_f = self.featureExtract(x)
@@ -81,7 +92,9 @@ class SiamRPN(nn.Module):
         kernel_size = r1_kernel_raw.data.size()[-1]
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
-    
+        # 将分类的kernel分装在AttentionBlock这个类中
+        self.attention = AttentionBlock(batch_size=10, channels=self.feature_out, dim_size=4, X=self.cls1_kernel)
+
     def weigth_init(self, m):
         if isinstance(m, nn.Conv2d):
             init.xavier_uniform_(m.weight.data)
@@ -112,23 +125,64 @@ class ChannelSELayer(nn.Module):
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, input_tensor, target_state):
+    def forward(self, input_tensor, target_state=None):
         """
         :param input_tensor: X, shape = (batch_size, num_channels, H, W)
         :return: output tensor
         :target_state: try to get into this situation
         """
+        pass
         batch_size, num_channels, H, W = input_tensor.size()
-        # Average along each channel
-        squeeze_tensor = input_tensor.view(batch_size, num_channels, -1).mean(dim=2)
+        input_tensor = input_tensor.view(batch_size, num_channels, -1)
+        target_state = torch.rand((batch_size, num_channels, 16))
 
-        # channel excitation
-        fc_out_1 = self.relu(self.fc1(squeeze_tensor))
-        fc_out_2 = self.sigmoid(self.fc2(fc_out_1))
+        for i in range(batch_size):
+            input_tensor[i, :, :].t()*Param
+        # # Average along each channel
+        # squeeze_tensor = input_tensor.view(batch_size, num_channels, -1).mean(dim=2)
 
-        a, b = squeeze_tensor.size()
-        output_tensor = torch.mul(input_tensor, fc_out_2.view(a, b, 1, 1))
-        return output_tensor
+        # # channel excitation
+        # fc_out_1 = self.relu(self.fc1(squeeze_tensor))
+        # fc_out_2 = self.sigmoid(self.fc2(fc_out_1))
+
+        # a, b = squeeze_tensor.size()
+        # output_tensor = torch.mul(input_tensor, fc_out_2.view(a, b, 1, 1))
+        # return output_tensor
+
+
+class AttentionBlock(nn.Module):
+    def __init__(self, batch_size, channels, dim_size, X):
+        super(AttentionBlock, self).__init__()
+        self.X = X
+        M = torch.randn((batch_size, channels, dim_size, dim_size), requires_grad=True)
+        self.M = torch.nn.Parameter(M)
+        self.register_parameter("M",self.M) # 注册参数
+        self.conv = nn.Conv2d(channels, channels, 1)
+        # 损失函数
+        self.loss = torch.nn.MSELoss()
+        self.optimizer = HessianFree(self.conv.parameters(), use_gnm=True, verbose=False)
+
+    def forward(self, Y):
+        self.optim(Y)
+        # batchsize, channels, H, W = X.size()
+        # X = X.view(batchsize, channels, -1)
+        return self.X * self.M
+
+    def optim(self, Y):
+        def closure():
+            z = self.conv(self.X) #  * self.M
+            loss = self.loss(z, Y) + 1000 * torch.abs(torch.mean(self.conv.weight)) # + torch.abs(torch.mean(self.M))
+            loss.backward(create_graph=True)
+            print("Loss {}".format(loss.item()))
+            return loss, z
+
+        for i in range(3):
+            print("Epoch {}".format(i))
+            self.optimizer.zero_grad()
+            self.optimizer.step(closure, M_inv=None)
+
+        pass
+
 
 class SiamRPNBIG(SiamRPN):
     def __init__(self):

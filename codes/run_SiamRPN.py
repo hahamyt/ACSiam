@@ -75,10 +75,10 @@ class TrackerConfig(object):
 
 # 计算目标的得分图
 # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
-def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scale_z, p):
+def tracker_eval(im, avg_chans, net, x_crop, current_z, target_pos, target_sz, window, scale_z, p):
 
     def calc_score():
-        delta, score = net(x_crop)
+        delta, score = net(x_crop, current_z)
         # 用于边框回归的量,表示的是分别对5中anchor进行回归, 其结构展开来应该是(4, 5, 19, 19)
         delta = delta.permute(1, 2, 3, 0).contiguous().view(4, -1).data.cpu().numpy()
         # 目标打分的量, 表示的是对5种anchor分别处理下的打分的量,其结构展开来应该为(5, 19, 19)
@@ -210,8 +210,12 @@ def SiamRPN_track(state, im):
     x_crop_old = get_subwindow_tracking(im, target_pos_old, p.instance_size,
                                     round(s_x), avg_chans).unsqueeze(0)
     viz.image(x_crop_old.squeeze(), opts={"title":"search region"}, win="search region")
+
+    current_z = get_subwindow_tracking(im, target_pos_old, p.exemplar_size, s_z, avg_chans)
+    current_z = Variable(current_z.unsqueeze(0))
+
     # 这里的 target_pos 表示的是后一帧的目标新的位置
-    target_pos_new, target_sz_new, score = tracker_eval(im, avg_chans, net, x_crop_old.cpu(), target_pos_old, target_sz_old * scale_z, window, scale_z, p)
+    target_pos_new, target_sz_new, score = tracker_eval(im, avg_chans, net, x_crop_old, current_z, target_pos_old, target_sz_old * scale_z, window, scale_z, p)
 
     # 得到新的exampler
     z_crop = get_subwindow_tracking(im, target_pos_new, p.exemplar_size, s_z, avg_chans)
