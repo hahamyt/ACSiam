@@ -151,7 +151,11 @@ def load_net_weight(net, weight):
              'update.4.bias',
              'update.4.running_mean',
              'update.4.running_var',
-             'update.4.num_batches_tracked']
+             'update.4.num_batches_tracked',
+             'attention.fc1.weight',
+             'attention.fc1.bias',
+             'attention.fc2.weight',
+             'attention.fc2.bias']
     model_dict = net.state_dict()
     for k, v in net.state_dict().items():
         # print(k)
@@ -160,10 +164,10 @@ def load_net_weight(net, weight):
             # print(k, weight[k].shape)
     net.load_state_dict(model_dict)
     net.requires_grad_(False)
-    net.update.requires_grad_(True)
+    
     # net.conv_cls1.requires_grad_(True)
     net.conv_cls2.requires_grad_(True)
-    # net.merge.requires_grad_(True)
+    
     return net
 
 def overlap_ratio(rect1, rect2):

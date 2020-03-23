@@ -118,8 +118,7 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
     pscore = pscore * (1 - p.window_influence) + window * p.window_influence
    
     best_pscore_id = np.argmax(pscore)
-    top_score_id = best_pscore_id
-    
+
     def calc_pos_sz(score_id):
         target = delta[:, score_id] / scale_z
         target_sz_new = target_sz / scale_z
@@ -135,94 +134,12 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
         target_sz_new = np.array([res_w, res_h])
         return target_pos_new, target_sz_new
 
-    # 计算得到k个得分最高样本的尺寸和位置
-    if(len(net.memory.pos_samples) >= net.memory.store_amount) and debug:
-        pred_score = back_score.clone()
-
-        previous_rect = np.concatenate([target_pos - target_sz // 2, target_sz])
-
-        for best_pscore_id in range(pred_score.size(1)):
-            target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
-
-            rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-            iou = overlap_ratio(rect, previous_rect)
-            if iou >= 0.3:
-                z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
-                # z_crop_candidate = net.featureExtract(z_crop_candidate)
-                update_score = net.update(z_crop_candidate).squeeze().item()
-                tracker_score = pred_score[1, best_pscore_id].item()
-
-                # viz.image(z_crop_candidate.squeeze(0))
-
-                print("IOU: {0}, TRACKER_SCORE: {1}, UPDATE_SCORE: {2}".format(iou[0], tracker_score, update_score))
-                # IOU我当做是真实的标签， tracker_score我当做是生成样本的标签，update_score表示的是判别网络的输出
-                # # 更新网络
-                if update_score < tracker_score:
-                #     train_updatenet(net, iter=10)
-                    net.memory.insert_pos_sample(z_crop_candidate)
-
-            else:
-                z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
-                # z_crop_candidate = net.featureExtract(z_crop_candidate)     # .view(1,-1)
-                
-                update_score = net.update(z_crop_candidate).squeeze().item()
-                tracker_score = pred_score[1, best_pscore_id].item()
-                # viz.image(z_crop_candidate.squeeze(0))
-                print("IOU: {0}, TRACKER_SCORE: {1}, UPDATE_SCORE: {2}".format(iou[0], tracker_score, update_score))
-                # 更新网络
-                if tracker_score > update_score:
-                #     train_updatenet(net, iter=10)
-                    net.memory.insert_neg_sample(z_crop_candidate)
-
-        if net.current_frame >= 30 and net.current_frame % 10 == 0:
-            train_updatenet(net, iter=1)
-
-            candidates = []
-            vis = []
-            k = 200
-            for i in back_score[1, :].topk(k)[1].data:
-                target_pos_new, target_sz_new = calc_pos_sz(i)
-                rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-                z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
-                
-                vis.append(z_crop_candidate.squeeze())
-                # z_crop_candidate = net.featureExtract(z_crop_candidate)
-                candidates.append(z_crop_candidate)
-                # print(i)
-            # a = torchvision.utils.make_grid(torch.stack(vis), nrow=10)
-            # viz.image(a)
-            
-            output = net.update(torch.cat(candidates)).squeeze()
-            # k = 0
-            # for im in vis:
-            #     viz.image(im, opts={"title":"{}".format(output.data[k].item())})
-            #     k = k + 1
-
-            pred_score[1, back_score[1, :].topk(k)[1].data] = output # torch.clamp(output, min=0)
-            pred_score[0, back_score[1, :].topk(k)[1].data] = 1 - output # torch.clamp(output, min=0)
-
-            viz.heatmap(pred_score[1, :].reshape(5, 19, 19).mean(0), win="Modified Pscore", opts={"title":"Modified Pscore"})
-            
-            # 更新网络
-            loss = net.tmple_loss(pred_score, back_score)
-            
-            net.cls_optimizer.zero_grad() 
-            loss.backward()
-            net.cls_optimizer.step()
-            
-        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
-    else:
-        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
-        rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-        z_crop_candidate = loader(crop_image(im, rect, padding=1)).unsqueeze(0)
-        # z_crop_candidate = net.featureExtract(z_crop_candidate)
-        net.memory.insert_pos_sample(z_crop_candidate)
+    target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
 
     return target_pos_new, target_sz_new, score[best_pscore_id]
 
 # 初始化跟踪器网络
 def SiamRPN_init(im, target_pos_init, target_sz_init, net):
-    net.current_frame += 1
     state = dict()
     p = TrackerConfig()
     p.update(net.cfg)
@@ -249,12 +166,6 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
                                     s_z, avg_chans)
     z = Variable(z_crop.unsqueeze(0))
 
-    # # 将第一帧的目标送入到内容管理器中, 以监督内容管理器的质量
-    # rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
-    # z_crop_candidate = crop_image(im, rect, img_size=127, padding=0)
-
-    # net.memory.insert_init_gt(net.featureExtract(torch.from_numpy(z_crop_candidate)))
-
     state['p'] = p
     state['net'] = net
     state['avg_chans'] = avg_chans
@@ -274,14 +185,6 @@ def SiamRPN_init(im, target_pos_init, target_sz_init, net):
     window = np.tile(window.flatten(), p.anchor_num)
     state['window'] = window
 
-    # 第一帧，初始化分类器
-    rect = np.concatenate([target_pos_init - target_sz_init // 2, target_sz_init])
-    pos_regions, neg_regions = net.memory.sample_boxes(im, rect)
-    # pos_features, neg_features = net.featureExtract(pos_regions), net.featureExtract(neg_regions)
-    net.memory.insert_pos_sample(pos_regions[:50])
-    net.memory.insert_neg_sample(neg_regions[:50])
-    
-    train_updatenet(net, pos_regions, neg_regions)
     return state
 
 # 跟踪
@@ -306,10 +209,13 @@ def SiamRPN_track(state, im):
     # target_pos 表示的是前一帧的目标的位置
     x_crop_old = get_subwindow_tracking(im, target_pos_old, p.instance_size,
                                     round(s_x), avg_chans).unsqueeze(0)
-
     viz.image(x_crop_old.squeeze(), opts={"title":"search region"}, win="search region")
     # 这里的 target_pos 表示的是后一帧的目标新的位置
     target_pos_new, target_sz_new, score = tracker_eval(im, avg_chans, net, x_crop_old.cpu(), target_pos_old, target_sz_old * scale_z, window, scale_z, p)
+
+    # 得到新的exampler
+    z_crop = get_subwindow_tracking(im, target_pos_new, p.exemplar_size, s_z, avg_chans)
+    z = Variable(z_crop.unsqueeze(0))
 
     target_pos_new[0] = max(0, min(state['im_w'], target_pos_new[0]))
     target_pos_new[1] = max(0, min(state['im_h'], target_pos_new[1]))
@@ -320,94 +226,3 @@ def SiamRPN_track(state, im):
     state['target_sz'] = target_sz_new
     state['score'] = score
     return state
-
-
-def train_updatenet(net, pos_feats=None, neg_feats=None, iter=1):
-    if pos_feats == None:
-        pos_feats = torch.cat(net.memory.pos_samples)
-        neg_feats = torch.cat(net.memory.neg_samples)
-    net.update.train()
-    batch_pos = 32
-    batch_neg = 96
-    batch_test = 256
-    batch_neg_cand = max(1024, batch_neg)
-
-    pos_idx = np.random.permutation(pos_feats.size(0))
-    neg_idx = np.random.permutation(neg_feats.size(0))
-    while (len(pos_idx) < batch_pos * iter):
-        pos_idx = np.concatenate([pos_idx, np.random.permutation(pos_feats.size(0))])
-    while (len(neg_idx) < batch_neg_cand * iter):
-        neg_idx = np.concatenate([neg_idx, np.random.permutation(neg_feats.size(0))])
-    pos_pointer = 0
-    neg_pointer = 0
-
-    for i in range(iter):
-        net.update_optimizer.zero_grad()
-        # select pos idx
-        pos_next = pos_pointer + batch_pos
-        pos_cur_idx = pos_idx[pos_pointer:pos_next]
-        pos_cur_idx = pos_feats.new(pos_cur_idx).long()
-        pos_pointer = pos_next
-
-        # select neg idx
-        neg_next = neg_pointer + batch_neg_cand
-        neg_cur_idx = neg_idx[neg_pointer:neg_next]
-        neg_cur_idx = neg_feats.new(neg_cur_idx).long()
-        neg_pointer = neg_next
-
-        # create batch
-        batch_pos_feats = pos_feats[pos_cur_idx]
-        batch_neg_feats = neg_feats[neg_cur_idx]
-
-        # hard negative mining
-        if batch_neg_cand > batch_neg:
-            net.update.eval()
-            for start in range(0, batch_neg_cand, batch_test):
-                end = min(start + batch_test, batch_neg_cand)
-                with torch.no_grad():
-                    score = net.update.forward(batch_neg_feats[start:end]).squeeze()
-                if start == 0:
-                    neg_cand_score = score.detach().clone()
-                else:
-                    neg_cand_score = torch.cat((neg_cand_score, score.detach().clone()), 0)
-
-            _, top_idx = neg_cand_score.topk(batch_neg)
-            batch_neg_feats = batch_neg_feats[top_idx]
-            net.update.train()
-            feature, target = shuffleTensor(batch_pos_feats, batch_neg_feats)
-            score = net.update(feature).squeeze()
-            loss = net.update_loss(score, target)
-
-            print("Epoch:{0}, Loss:{1}.".format(i, loss.item()))
-            
-            net.update_optimizer.zero_grad()
-            loss.backward(retain_graph=True)
-            net.update_optimizer.step()
-
-            # print("Epoch {}".format(i))
-            # def closure():
-            #     score = net.update(feature).squeeze()
-            #     loss = net.update_loss(score, target)
-            #     print(loss.item())
-            #     loss.backward(retain_graph=True)
-            #     return loss, score
-
-            # for k in range(10):
-            #     net.update_optimizer.zero_grad()
-            #     net.update_optimizer.step(closure, M_inv=None)  
-    
-    net.update.eval()
-            
-    # net.update.train()
-    # feature, target = shuffleTensor(pos_feats, neg_feats)
-    # def closure():
-    #     score = net.update(feature).squeeze()
-    #     loss = net.update_loss(score, target)
-    #     print(loss.item())
-    #     loss.backward(retain_graph=True)
-    #     return loss, score
-
-    # for i in range(10):
-    #     print("Epoch {}".format(i))
-    #     net.update_optimizer.zero_grad()
-    #     net.update_optimizer.step(closure, M_inv=None)    

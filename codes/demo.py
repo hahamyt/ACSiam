@@ -76,12 +76,9 @@ for f, image_file in enumerate(image_files):
     cv2.imshow('SiamRPN', im)
     cv2.waitKey(1)
 
-    # 传入目标的位置和大小, 还有当前帧的模板
-    # if f > net.memory.store_amount and f % 5 == 0:
-    #     net.update_kernel()
     iou = overlap_ratio(res, gts[f])
     all_ious.append(iou)
-    net.current_frame += 1
+    
     # if iou < 0.1:
     #     print("跟踪失败")
 

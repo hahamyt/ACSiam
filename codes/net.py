@@ -49,42 +49,18 @@ class SiamRPN(nn.Module):
         self.conv_cls2 = nn.Conv2d(feat_in, feature_out, 3)
         self.regress_adjust = nn.Conv2d(4*anchor, 4*anchor, 1)
 
-        # 用于推理的更新网络 (W − K + 2P )/S + 1
-        self.update = nn.Sequential(nn.Conv2d(3, 512, kernel_size=5, stride=2), # N = (32 - 5 + 0) / 2 + 1 = 15
-                                    nn.BatchNorm2d(512),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv2d(512, 256, kernel_size=5, stride=2),# N = (15 - 5 + 0) / 2 + 1 = 7
-                                    nn.BatchNorm2d(256),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv2d(256, 1, kernel_size=5, stride=2),  # N = (7 - 5 + 0) / 2 + 1 = 2
-                                    nn.Sigmoid())
-        self.update.apply(self.weigth_init)
-        self.update_loss = torch.nn.BCELoss()
-        self.tmple_loss = torch.nn.MSELoss()
-        self.cls_optimizer = torch.optim.RMSprop(self.conv_cls2.parameters(), lr = 0.001) # , momentum=0.9)
-        self.update_optimizer = torch.optim.SGD(self.update.parameters(), lr = 0.01, momentum=0.9)
-        
-        # self.update_optimizer = HessianFree(self.update.parameters(), use_gnm=True, verbose=False)
-
-        # 原来的算法是,在第一帧直接计算一次kernel,现在我们引入一个LSTM网络,利用存储在Memory中的时序训练样本
-        # 推理出kernel
-        # 1, 因此先定义一个Memory组件: amount 表示的是存储时序的数目,这里取值为3
-        self.memory = Memory(amount=100)
         # 2, 定义embedded的集合
         self.r1_kernel = []
         # 3, 边框回归的组件与原来保持一致,这里不做变化
         self.cls1_kernel = []
         self.cfg = {}
 
-        self.current_frame = 0
+        self.attention = ChannelSELayer(feature_out)
 
-        self.step = 0
-        self.step2 = 0
-
-    def forward(self, x):
-        x_f = self.featureExtract(x)
+    def forward(self, x, exampler):
+        x_f = self.featureExtract(x) # 这里的x_f表示的是搜索区域， 我们应该加权的是什么特征？应该是目标的特征吧
         return self.regress_adjust(F.conv2d(self.conv_r2(x_f), self.r1_kernel)), \
-               F.conv2d(self.conv_cls2(x_f), self.cls1_kernel)
+               F.conv2d(self.conv_cls2(x_f), self.attention.forward(self.cls1_kernel, exampler))
 
     def featextract(self, x):
         x_f = self.featureExtract(x)
@@ -97,7 +73,6 @@ class SiamRPN(nn.Module):
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size).requires_grad_(True)
 
-
     def temple(self, z):
         z_f = self.featureExtract(z)
         # 初始化滤波器,包括边框回归的和跟踪打分的
@@ -106,11 +81,6 @@ class SiamRPN(nn.Module):
         kernel_size = r1_kernel_raw.data.size()[-1]
         self.r1_kernel = r1_kernel_raw.view(self.anchor*4, self.feature_out, kernel_size, kernel_size)
         self.cls1_kernel = cls1_kernel_raw.view(self.anchor*2, self.feature_out, kernel_size, kernel_size)
-
-    # @profile(precision=4, stream=open('memory_profiler.log', 'w+'))
-    def update_kernel(self):
-        pass
-
     
     def weigth_init(self, m):
         if isinstance(m, nn.Conv2d):
@@ -122,6 +92,43 @@ class SiamRPN(nn.Module):
         elif isinstance(m, nn.Linear):
             m.weight.data.normal_(0,0.01)
         
+class ChannelSELayer(nn.Module):
+    """
+    Re-implementation of Squeeze-and-Excitation (SE) block described in:
+        *Hu et al., Squeeze-and-Excitation Networks, arXiv:1709.01507*
+    """
+
+    def __init__(self, num_channels, reduction_ratio=2):
+        """
+        :param num_channels: No of input channels
+        :param reduction_ratio: By how much should the num_channels should be reduced
+        :param base_temple: weighted features according to base_temple
+        """
+        super(ChannelSELayer, self).__init__()
+        num_channels_reduced = num_channels // reduction_ratio
+        self.reduction_ratio = reduction_ratio
+        self.fc1 = nn.Linear(num_channels, num_channels_reduced, bias=True)
+        self.fc2 = nn.Linear(num_channels_reduced, num_channels, bias=True)
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, input_tensor, target_state):
+        """
+        :param input_tensor: X, shape = (batch_size, num_channels, H, W)
+        :return: output tensor
+        :target_state: try to get into this situation
+        """
+        batch_size, num_channels, H, W = input_tensor.size()
+        # Average along each channel
+        squeeze_tensor = input_tensor.view(batch_size, num_channels, -1).mean(dim=2)
+
+        # channel excitation
+        fc_out_1 = self.relu(self.fc1(squeeze_tensor))
+        fc_out_2 = self.sigmoid(self.fc2(fc_out_1))
+
+        a, b = squeeze_tensor.size()
+        output_tensor = torch.mul(input_tensor, fc_out_2.view(a, b, 1, 1))
+        return output_tensor
 
 class SiamRPNBIG(SiamRPN):
     def __init__(self):
