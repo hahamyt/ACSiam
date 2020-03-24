@@ -12,6 +12,7 @@ from update.memory import Memory, ConvLSTM
 import torch
 from memory_profiler import profile # 内存占用分析插件
 import visdom
+import itertools
 
 viz = visdom.Visdom()
 
@@ -54,7 +55,7 @@ class SiamRPN(nn.Module):
         # 3, 边框回归的组件与原来保持一致,这里不做变化
         self.cls1_kernel = []
         self.cfg = {}
-
+        
     def forward(self, x, exampler):
         """
         :param: exampler表示的是当前帧的exampler
@@ -157,33 +158,36 @@ class AttentionBlock(nn.Module):
         M = torch.randn((batch_size, channels, dim_size, dim_size), requires_grad=True)
         self.M = torch.nn.Parameter(M)
         self.register_parameter("M",self.M) # 注册参数
+        # 自定义正则化项系数
+        # punishment_ratio = torch.tensor([1.0], requires_grad=True)
+        # self.ratio = torch.nn.Parameter(punishment_ratio)
+        # self.register_parameter("ratio",self.ratio) # 注册参数
+
         self.conv = nn.Conv2d(channels, channels, 1)
         # 损失函数
         self.loss = torch.nn.MSELoss()
-        self.optimizer = HessianFree(self.conv.parameters(), use_gnm=True, verbose=False)
+        self.optimizer = HessianFree(itertools.chain(self.conv.parameters()), use_gnm=True, verbose=False)
+
+        self.debug_loss = []
 
     def forward(self, Y):
         self.optim(Y)
-        # batchsize, channels, H, W = X.size()
-        # X = X.view(batchsize, channels, -1)
-        return self.X * self.M
+        return self.conv(Y) # Y * self.M
 
     def optim(self, Y):
         def closure():
-            z = self.conv(self.X) #  * self.M
-            loss = self.loss(z, Y) + 1000 * torch.abs(torch.mean(self.conv.weight)) # + torch.abs(torch.mean(self.M))
+            z = self.conv(Y) #  * self.M
+            loss = self.loss(z, self.X) # + self.ratio * torch.abs(torch.mean(self.conv.weight)) # + torch.abs(torch.mean(self.M))
             loss.backward(create_graph=True)
-            print("Loss {}".format(loss.item()))
+            # print("Loss {}".format(loss.item()))
+            self.debug_loss.append(loss.item())
             return loss, z
 
-        for i in range(3):
-            print("Epoch {}".format(i))
+        for i in range(10):
+            # print("Epoch {}".format(i))
             self.optimizer.zero_grad()
             self.optimizer.step(closure, M_inv=None)
-
-        pass
-
-
+        
 class SiamRPNBIG(SiamRPN):
     def __init__(self):
         super(SiamRPNBIG, self).__init__(size=2)
