@@ -12,7 +12,6 @@ import torchvision
 from memory_profiler import profile # 内存占用分析插件
 from update.updatenet import MatchingNetwork
 viz = visdom.Visdom()
-debug = True
 
 from utils import get_subwindow_tracking, get_search_region_target, crop_image, overlap_ratio, shuffleTensor
 
@@ -126,54 +125,6 @@ def tracker_eval(im, avg_chans, net, x_crop, target_pos, target_sz, window, scal
         target_pos_new = np.array([res_x, res_y])
         target_sz_new = np.array([res_w, res_h])
         return target_pos_new, target_sz_new
-
-    # 计算得到k个得分最高样本的尺寸和位置
-    if debug:# (len(net.memory.manager.support_set_list) >= net.memory.store_amount) and debug:
-        target_pos_new, target_sz_new = calc_pos_sz(top_score_id)
-        # 计算得分最高的边框
-        top_score_rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-
-        # best_pscore_id = np.argmax(pscore)
-        k = 1805
-        best_scores_id = torch.from_numpy(pscore).topk(k)[1]
-
-        for i in range(best_scores_id.size(0)):
-            target_pos_new, target_sz_new = calc_pos_sz(best_scores_id[i])
-
-            rect = np.concatenate([target_pos_new - target_sz_new // 2, target_sz_new])
-            iou = overlap_ratio(rect, top_score_rect)
-
-            if iou >= 0.8:
-                pred_score[1, best_scores_id[i]] = iou.item()
-                pred_score[0, best_scores_id[i]] = 1-iou.item()
-            # elif iou < 0.01:
-            #     pred_score[1, best_scores_id[i]] = 1-iou.item()
-            #     pred_score[0, best_scores_id[i]] = iou.item()
-                
-    # 可视化，看看修改的效果
-    a = pred_score.data[1, :].cpu().numpy()
-    a = a.reshape(5, 19, 19)
-    viz.heatmap(a.mean(0), win="Pred Modified", opts={"title":"Modified Pscore"})
-                
-    target_pos_new, target_sz_new = calc_pos_sz(best_pscore_id)
-    #　添加用于对抗训练的样本
-    net.memory.insert_fake_scores(back_score)
-    net.memory.insert_true_scores(pred_score)
-    if net.current_frame % 10 == 0:
-        net.freeze_params(net.conv_cls2)
-        net.unfreeze_params(net.discriminator)
-        train_gan(net)
-        if net.current_frame > 200 and net.current_frame % 30:
-            net.unfreeze_params(net.conv_cls2)
-            net.freeze_params(net.discriminator)
-
-            gen_scores = torch.stack(net.memory.fake_scores).view(-1, 3610)
-            
-            net.generator_optimizer.zero_grad()
-            loss_G = -torch.mean(net.discriminator(gen_scores))
-            loss_G.backward(retain_graph=True)
-            net.generator_optimizer.step()
-            print("G Loss:{}".format(loss_G.item()))
 
     return target_pos_new, target_sz_new, score[best_pscore_id]
 
