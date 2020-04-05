@@ -8,6 +8,9 @@ import cv2
 from collections import namedtuple
 from got10k.trackers import Tracker
 
+from upsiam import *
+import visdom
+viz = visdom.Visdom()
 
 class SiamRPN(nn.Module):
 
@@ -43,8 +46,21 @@ class SiamRPN(nn.Module):
         self.conv_cls_x = nn.Conv2d(512, 512, 3)
         self.adjust_reg = nn.Conv2d(4 * anchor_num, 4 * anchor_num, 1)
 
+        # 自己新加的
+        self.mem = []
     def forward(self, z, x):
         return self.inference(x, **self.learn(z))
+
+    def insert_sampler(self, sampler, amount=5):
+        self.amount = amount
+        if len(self.mem) >= amount:
+            self.mem.__delitem__(1)
+        with torch.set_grad_enabled(False):
+            z = self.feature(sampler)
+            kernel_cls = self.conv_cls_z(z)
+            k = kernel_cls.size()[-1]
+            kernel_cls = kernel_cls.view(2 * self.anchor_num, 512, k, k)
+            self.mem.append(kernel_cls)
 
     def learn(self, z):
         z = self.feature(z)
@@ -201,6 +217,20 @@ class TrackerSiamRPN(Tracker):
         self.x_sz = self.z_sz * \
             self.cfg.instance_sz / self.cfg.exemplar_sz
 
+        # 添加当前的exampler
+        # exemplar image
+        self.avg_color = np.mean(image, axis=(0, 1))
+        exemplar_image = self._crop_and_resize(
+            image, self.center, self.z_sz,
+            self.cfg.exemplar_sz, self.avg_color)
+        exemplar_image = torch.from_numpy(exemplar_image).to(
+            self.device).permute([2, 0, 1]).unsqueeze(0).float()
+        self.net.insert_sampler(exemplar_image)
+
+        # 进行TDD计算：
+        if len(self.net.mem) == self.amount:
+            dset = torch.cat(self.net.mem).permute(0, 2, 3, 1).reshape(-1, 512)
+            pass
         # return 1-indexed and left-top based bounding box
         box = np.array([
             self.center[1] + 1 - (self.target_sz[1] - 1) / 2,
