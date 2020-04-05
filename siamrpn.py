@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 from collections import namedtuple
 from got10k.trackers import Tracker
-
+from sklearn.decomposition import PCA
 from upsiam import *
 import visdom
 viz = visdom.Visdom()
@@ -48,10 +48,12 @@ class SiamRPN(nn.Module):
 
         # 自己新加的
         self.mem = []
+        self.pca = PCA(n_components=1)
+        
     def forward(self, z, x):
         return self.inference(x, **self.learn(z))
 
-    def insert_sampler(self, sampler, amount=5):
+    def insert_sampler(self, sampler, amount=25):
         self.amount = amount
         if len(self.mem) >= amount:
             self.mem.__delitem__(1)
@@ -163,6 +165,7 @@ class TrackerSiamRPN(Tracker):
         with torch.set_grad_enabled(False):
             self.net.eval()
             self.kernel_reg, self.kernel_cls = self.net.learn(exemplar_image)
+        self.upsiam = UpBlock(512, 4, self.kernel_cls)
 
     def update(self, image):
         image = np.asarray(image)
@@ -197,7 +200,7 @@ class TrackerSiamRPN(Tracker):
         response = response * penalty
         response = (1 - self.cfg.window_influence) * response + \
             self.cfg.window_influence * self.hann_window
-        
+        viz.heatmap(response.reshape(5, 19, 19).mean(0), win="Score")
         # peak location
         best_id = np.argmax(response)
         offset = offsets[:, best_id] * self.z_sz / self.cfg.exemplar_sz
@@ -228,8 +231,19 @@ class TrackerSiamRPN(Tracker):
         self.net.insert_sampler(exemplar_image)
 
         # 进行TDD计算：
-        if len(self.net.mem) == self.amount:
-            dset = torch.cat(self.net.mem).permute(0, 2, 3, 1).reshape(-1, 512)
+        if len(self.net.mem) == self.net.amount:
+            # 计算最大特征值对应的特征向量
+            kernels = torch.cat(self.net.mem).permute(0, 2, 3, 1).reshape(-1, 512)
+            kernels_mean = sum(kernels)/len(kernels)
+            self.net.pca.fit(kernels.cpu().numpy())
+            trans_vec = self.net.pca.components_[0]
+            # 反推回当前的kernel，将这些kernel的共性提炼出来（共性就是都有要跟踪的目标）
+            x, c, y, z = self.kernel_cls.shape
+            tmp = self.kernel_cls.permute(0,2,3,1).reshape(-1, 512)
+            tmp -= kernels_mean.repeat(tmp.shape[0], 1)
+
+            P = np.dot(trans_vec, tmp.detach().cpu().numpy().transpose()).reshape(x, y, z)
+            self.kernel_cls = self.upsiam(self.net.mem[-1]* P[:, np.newaxis, :, :].repeat(c, 1))
             pass
         # return 1-indexed and left-top based bounding box
         box = np.array([
