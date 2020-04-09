@@ -59,10 +59,14 @@ class SiamRPN(nn.Module):
             self.mem.__delitem__(1)
         with torch.set_grad_enabled(False):
             z = self.feature(sampler)
-            kernel_cls = self.conv_cls_z(z)
-            k = kernel_cls.size()[-1]
-            kernel_cls = kernel_cls.view(2 * self.anchor_num, 512, k, k)
-            self.mem.append(kernel_cls)
+            # z = self.calc_cls_kernel(z)
+            self.mem.append(z)
+    
+    def calc_cls_kernel(self, z):
+        kernel_cls = self.conv_cls_z(z)
+        k = kernel_cls.size()[-1]
+        kernel_cls = kernel_cls.view(2 * self.anchor_num, 512, k, k)
+        return kernel_cls
 
     def learn(self, z):
         z = self.feature(z)
@@ -243,7 +247,7 @@ class TrackerSiamRPN(Tracker):
             tmp -= kernels_mean.repeat(tmp.shape[0], 1)
 
             P = np.dot(trans_vec, tmp.detach().cpu().numpy().transpose()).reshape(x, y, z)
-            self.kernel_cls = self.upsiam(self.net.mem[-1]* P[:, np.newaxis, :, :].repeat(c, 1))
+            self.kernel_cls = self.upsiam(self.net.calc_cls_kernel(self.net.mem[-1])* P[:, np.newaxis, :, :].repeat(c, 1))
             pass
         # return 1-indexed and left-top based bounding box
         box = np.array([
