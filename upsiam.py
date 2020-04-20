@@ -3,21 +3,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class UpBlock(nn.Module):
-    def __init__(self, channels, dim_size, X):
+    def __init__(self, channels, dim_size, X, amount):
         super(UpBlock, self).__init__()
         # setup GPU device if available
         self.cuda = torch.cuda.is_available()
         self.device = torch.device('cuda:0' if self.cuda else 'cpu')
 
+        self.channels = channels
         self.X = X
         self.conv = nn.Conv2d(channels, channels, 1).to(self.device)
 
         # 损失函数
         self.loss = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.conv.parameters())
-        self.mem = Mem(6)
+        self.mem = Mem(amount)
 
     def forward(self, Y):
+        self.conv = nn.Conv2d(self.channels, self.channels, 1).to(self.device)
+        self.optimizer = torch.optim.Adam(self.conv.parameters())
         self.optim(Y)
 
         self.mem.insert(self.conv.weight)

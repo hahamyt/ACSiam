@@ -95,9 +95,10 @@ class TrackerSiamRPN(Tracker):
 
     def __init__(self, net_path=None, **kargs):
         super(TrackerSiamRPN, self).__init__(
-            name='Ours', is_deterministic=True)
+            name='111', is_deterministic=True)
         self.parse_args(**kargs)
 
+        self.amount = 3
         # setup GPU device if available
         self.cuda = torch.cuda.is_available()
         self.device = torch.device('cuda:0' if self.cuda else 'cpu')
@@ -108,7 +109,6 @@ class TrackerSiamRPN(Tracker):
             self.net.load_state_dict(torch.load(
                 net_path, map_location=lambda storage, loc: storage))
         self.net = self.net.to(self.device)
-        self.mm = Mem(3)
 
     def parse_args(self, **kargs):
         self.cfg = {
@@ -172,7 +172,7 @@ class TrackerSiamRPN(Tracker):
             self.net.eval()
             self.kernel_reg, self.kernel_cls = self.net.learn(exemplar_image)
         # 将分类的kernel分装在AttentionBlock这个类中
-        self.attention = UpBlock(channels=512, dim_size=4, X=self.kernel_cls)
+        self.attention = UpBlock(channels=512, dim_size=4, X=self.kernel_cls, self.amount)
 
     def update(self, image):
         image = np.asarray(image)
