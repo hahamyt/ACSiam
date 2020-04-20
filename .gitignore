@@ -1,4 +1,5 @@
 .*
+*.pdf
 *.pyc
 *.pdf
 temp/
@@ -8,4 +9,5 @@ reports/
 pretrained/
 data
 data/
+temp/
 !.gitignore
