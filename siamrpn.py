@@ -10,8 +10,8 @@ from got10k.trackers import Tracker
 from sklearn.decomposition import PCA
 from upsiam import *
 
-# import visdom
-# viz = visdom.Visdom()
+import visdom
+viz = visdom.Visdom()
 
 class SiamRPN(nn.Module):
 
@@ -46,28 +46,9 @@ class SiamRPN(nn.Module):
         self.conv_cls_z = nn.Conv2d(512, 512 * 2 * anchor_num, 3, 1)
         self.conv_cls_x = nn.Conv2d(512, 512, 3)
         self.adjust_reg = nn.Conv2d(4 * anchor_num, 4 * anchor_num, 1)
-
-        # 自己新加的
-        self.mem = []
-        self.pca = PCA(n_components=1)
         
     def forward(self, z, x):
         return self.inference(x, **self.learn(z))
-
-    def insert_sampler(self, sampler, amount=25):
-        self.amount = amount
-        if len(self.mem) >= amount:
-            self.mem.__delitem__(1)
-        with torch.set_grad_enabled(False):
-            z = self.feature(sampler)
-            # z = self.calc_cls_kernel(z)
-            self.mem.append(z)
-    
-    def calc_cls_kernel(self, z):
-        kernel_cls = self.conv_cls_z(z)
-        k = kernel_cls.size()[-1]
-        kernel_cls = kernel_cls.view(2 * self.anchor_num, 512, k, k)
-        return kernel_cls
 
     def learn(self, z):
         z = self.feature(z)
@@ -90,9 +71,7 @@ class SiamRPN(nn.Module):
 
         return out_reg, out_cls
 
-
 class TrackerSiamRPN(Tracker):
-
     def __init__(self, net_path=None, **kargs):
         super(TrackerSiamRPN, self).__init__(
             name='111', is_deterministic=True)
@@ -109,6 +88,8 @@ class TrackerSiamRPN(Tracker):
             self.net.load_state_dict(torch.load(
                 net_path, map_location=lambda storage, loc: storage))
         self.net = self.net.to(self.device)
+
+        self.pca = PCA(n_components=1)
 
     def parse_args(self, **kargs):
         self.cfg = {
@@ -172,7 +153,7 @@ class TrackerSiamRPN(Tracker):
             self.net.eval()
             self.kernel_reg, self.kernel_cls = self.net.learn(exemplar_image)
         # 将分类的kernel分装在AttentionBlock这个类中
-        self.attention = UpBlock(channels=512, dim_size=4, X=self.kernel_cls, self.amount)
+        self.transformer = UpBlock(channels=512, dim_size=4, X=self.kernel_cls, amount=self.amount)
 
     def update(self, image):
         image = np.asarray(image)
@@ -186,20 +167,10 @@ class TrackerSiamRPN(Tracker):
         instance_image = torch.from_numpy(instance_image).to(
             self.device).permute(2, 0, 1).unsqueeze(0).float()
 
-        ######################  测试实验部分 #################################
-        # exemplar image
-        self.avg_color = np.mean(image, axis=(0, 1))
-        exemplar_image = self._crop_and_resize(
-            image, self.center, self.z_sz,
-            self.cfg.exemplar_sz, self.avg_color)
-        exemplar_image = torch.from_numpy(exemplar_image).to(
-            self.device).permute([2, 0, 1]).unsqueeze(0).float()
-        
         with torch.set_grad_enabled(False):
             self.net.eval()
-            z_t = self.net.calc_cls_kernel(self.net.feature(exemplar_image))
             out_reg, out_cls = self.net.inference(
-                instance_image, self.kernel_reg, self.attention(z_t))#self.kernel_cls)
+                instance_image, self.kernel_reg, self.kernel_cls)
 
         # offsets
         offsets = out_reg.permute(
@@ -218,7 +189,7 @@ class TrackerSiamRPN(Tracker):
         response = response * penalty
         response = (1 - self.cfg.window_influence) * response + \
             self.cfg.window_influence * self.hann_window
-        # viz.heatmap(response.reshape(5, out_cls.shape[2], out_cls.shape[2]).mean(0), win="Score")
+        viz.heatmap(response.reshape(5, out_cls.shape[2], out_cls.shape[2]).mean(0), win="Score")
         # peak location
         best_id = np.argmax(response)
         offset = offsets[:, best_id] * self.z_sz / self.cfg.exemplar_sz
@@ -238,32 +209,47 @@ class TrackerSiamRPN(Tracker):
         self.x_sz = self.z_sz * \
             self.cfg.instance_sz / self.cfg.exemplar_sz
 
+        # 测试实验部分
         # 添加当前的exampler
-        # # exemplar image
-        # self.avg_color = np.mean(image, axis=(0, 1))
-        # exemplar_image = self._crop_and_resize(
-        #     image, self.center, self.z_sz,
-        #     self.cfg.exemplar_sz, self.avg_color)
-        # exemplar_image = torch.from_numpy(exemplar_image).to(
-        #     self.device).permute([2, 0, 1]).unsqueeze(0).float()
+        # exemplar image
+        self.avg_color = np.mean(image, axis=(0, 1))
+        exemplar_image = self._crop_and_resize(
+            image, self.center, self.z_sz,
+            self.cfg.exemplar_sz, self.avg_color)
+        exemplar_image = torch.from_numpy(exemplar_image).to(
+            self.device).permute([2, 0, 1]).unsqueeze(0).float()
+        viz.image(exemplar_image.squeeze(), win="Exemplar image")
 
-        # self.net.insert_sampler(exemplar_image)
+        with torch.set_grad_enabled(False):
+            # 提取特征
+            z_t = self.net.feature(exemplar_image)
+            # 计算核
+            z_t = self.net.conv_cls_z(z_t)
+            # 面临两种选择：保存特征z_t还是保存内核z_t？
+            # 这里先保存内核
+            k = z_t.size()[-1]
+            self.transformer.mem.insert(z_t.view(2 * self.net.anchor_num, 512, k, k))
 
-        # 进行TDD计算：暂时注释掉，测试UPSIAM
-        # if len(self.net.mem) == self.net.amount:
-        #     # 计算最大特征值对应的特征向量
-        #     kernels = torch.cat(self.net.mem).permute(0, 2, 3, 1).reshape(-1, 512)
-        #     kernels_mean = sum(kernels)/len(kernels)
-        #     self.net.pca.fit(kernels.cpu().numpy())
-        #     trans_vec = self.net.pca.components_[0]
-        #     # 反推回当前的kernel，将这些kernel的共性提炼出来（共性就是都有要跟踪的目标）
-        #     x, c, y, z = self.kernel_cls.shape
-        #     tmp = self.kernel_cls.permute(0,2,3,1).reshape(-1, 512)
-        #     tmp -= kernels_mean.repeat(tmp.shape[0], 1)
+        # 进行TDD计算
+        if len(self.transformer.mem.examplers) == self.amount:
+            # 计算最大特征值对应的特征向量
+            kernels = torch.cat(self.transformer.mem.examplers).permute(0, 2, 3, 1).reshape(-1, 512)
+            kernels_mean = sum(kernels)/len(kernels)
+            self.pca.fit(kernels.cpu().numpy())
+            trans_vec = self.pca.components_[0]
+            # 反推回当前的kernel，将这些kernel的共性提炼出来（共性就是都有要跟踪的目标）
+            x, c, y, z = self.kernel_cls.shape
+            tmp = self.kernel_cls.permute(0,2,3,1).reshape(-1, 512)
+            tmp -= kernels_mean.repeat(tmp.shape[0], 1)
 
-        #     P = np.dot(trans_vec, tmp.detach().cpu().numpy().transpose()).reshape(x, y, z)
-        #     self.kernel_cls = self.upsiam(self.net.calc_cls_kernel(self.net.mem[-1])* P[:, np.newaxis, :, :].repeat(c, 1))
-        #     pass
+            P = np.dot(trans_vec, tmp.detach().cpu().numpy().transpose()).reshape(x, y, z)
+            self.kernel_cls = self.transformer(
+                self.transformer.mem.examplers[-1] *
+                P[:, np.newaxis, :, :].repeat(c, 1))
+            pass
+
+        # END:测试实验部分
+
         # return 1-indexed and left-top based bounding box
         box = np.array([
             self.center[1] + 1 - (self.target_sz[1] - 1) / 2,
