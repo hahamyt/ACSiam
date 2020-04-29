@@ -9,7 +9,7 @@ from collections import namedtuple
 from got10k.trackers import Tracker
 from sklearn.decomposition import PCA
 from upsiam import *
-
+from utils import *
 import visdom
 viz = visdom.Visdom()
 
@@ -90,6 +90,8 @@ class TrackerSiamRPN(Tracker):
         self.net = self.net.to(self.device)
 
         self.pca = PCA(n_components=1)
+        self.trans_vec = None
+        self.mean_descriptor = None
 
     def parse_args(self, **kargs):
         self.cfg = {
@@ -186,9 +188,76 @@ class TrackerSiamRPN(Tracker):
         # response
         response = F.softmax(out_cls.permute(
             1, 2, 3, 0).contiguous().view(2, -1), dim=0).data[1].cpu().numpy()
+
         response = response * penalty
         response = (1 - self.cfg.window_influence) * response + \
             self.cfg.window_influence * self.hann_window
+
+        # 测试实验部分
+        # 添加当前的exampler
+        # exemplar image
+        self.avg_color = np.mean(image, axis=(0, 1))
+        exemplar_image = self._crop_and_resize(
+            image, self.center, self.z_sz,
+            self.cfg.exemplar_sz, self.avg_color)
+        # For Debug
+        origin_image = exemplar_image.copy()
+
+        exemplar_image = torch.from_numpy(exemplar_image).to(
+            self.device).permute([2, 0, 1]).unsqueeze(0).float()
+        viz.image(exemplar_image.squeeze(), win="Exemplar image")
+
+        mask = 1
+        mask_sz = int(np.sqrt(response.shape[-1]/5))
+        with torch.set_grad_enabled(False):
+            # 提取特征
+            z_t = self.net.feature[0:9](exemplar_image)
+            # 面临两种选择：保存特征z_t还是保存内核z_t？
+            # 这里选择保留特征
+            self.transformer.mem.insert(z_t.view(z_t.shape[1],
+                                                 z_t.shape[2] * z_t.shape[3]).transpose(0, 1))
+            if self.trans_vec is not None:
+                # 反推回当前的特征，将这些特征的共性提炼出来（共性就是都有要跟踪的目标）
+                w, h = z_t.shape[2], z_t.shape[3]
+                tmp = z_t.view(z_t.shape[1], -1).transpose(0, 1)
+                tmp -= self.mean_descriptor.repeat(tmp.shape[0], 1)
+                tmp = tmp.detach().cpu().numpy()
+                P = np.dot(self.trans_vec, tmp.transpose()).reshape(w, h)
+
+                mask = max_conn_mask(P, mask_sz, mask_sz)
+                # 下面是用于可视化的代码
+                # bboxes = get_bboxes(mask)
+                #
+                # mask_3 = np.concatenate(
+                #     (np.zeros((2, 127, 127), dtype=np.uint16), mask * 255), axis=0)
+                # # 将原图同mask相加并展示
+                # mask_3 = np.transpose(mask_3, (1, 2, 0))
+                # mask_3 = origin_image + mask_3
+                # mask_3[mask_3[:, :, 2] > 254, 2] = 255
+                # mask_3 = np.array(mask_3, dtype=np.uint8)
+                #
+                # # draw bboxes
+                # for (x, y, w, h) in bboxes:
+                #     cv2.rectangle(mask_3, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                #
+                # cv2.imshow("Debug", mask_3)
+                # cv2.waitKey(1)
+
+                mask = mask.repeat(5, 0).reshape(response.shape[-1])
+                # self.kernel_cls = self.transformer(
+                #         self.transformer.mem.examplers[-1] *
+                #         P[:, np.newaxis, :, :].repeat(c, 1))
+                #     pass
+            # 计算核
+            # z_t = self.net.conv_cls_z(z_t)
+            # 这里先保存内核
+            # k = z_t.size()[-1]
+            # self.transformer.mem.insert(z_t.view(2 * self.net.anchor_num, 512, k, k))
+
+
+        # 测试代码：加入mask的结果
+        response = mask * response
+        # END: 测试代码
         viz.heatmap(response.reshape(5, out_cls.shape[2], out_cls.shape[2]).mean(0), win="Score")
         # peak location
         best_id = np.argmax(response)
@@ -209,44 +278,14 @@ class TrackerSiamRPN(Tracker):
         self.x_sz = self.z_sz * \
             self.cfg.instance_sz / self.cfg.exemplar_sz
 
-        # 测试实验部分
-        # 添加当前的exampler
-        # exemplar image
-        self.avg_color = np.mean(image, axis=(0, 1))
-        exemplar_image = self._crop_and_resize(
-            image, self.center, self.z_sz,
-            self.cfg.exemplar_sz, self.avg_color)
-        exemplar_image = torch.from_numpy(exemplar_image).to(
-            self.device).permute([2, 0, 1]).unsqueeze(0).float()
-        viz.image(exemplar_image.squeeze(), win="Exemplar image")
-
-        with torch.set_grad_enabled(False):
-            # 提取特征
-            z_t = self.net.feature(exemplar_image)
-            # 计算核
-            z_t = self.net.conv_cls_z(z_t)
-            # 面临两种选择：保存特征z_t还是保存内核z_t？
-            # 这里先保存内核
-            k = z_t.size()[-1]
-            self.transformer.mem.insert(z_t.view(2 * self.net.anchor_num, 512, k, k))
-
         # 进行TDD计算
         if len(self.transformer.mem.examplers) == self.amount:
             # 计算最大特征值对应的特征向量
-            kernels = torch.cat(self.transformer.mem.examplers).permute(0, 2, 3, 1).reshape(-1, 512)
-            kernels_mean = sum(kernels)/len(kernels)
-            self.pca.fit(kernels.cpu().numpy())
-            trans_vec = self.pca.components_[0]
-            # 反推回当前的kernel，将这些kernel的共性提炼出来（共性就是都有要跟踪的目标）
-            x, c, y, z = self.kernel_cls.shape
-            tmp = self.kernel_cls.permute(0,2,3,1).reshape(-1, 512)
-            tmp -= kernels_mean.repeat(tmp.shape[0], 1)
+            descriptors = torch.cat(self.transformer.mem.examplers)   # .permute(0, 2, 3, 1).reshape(-1, 512)
+            self.mean_descriptor = sum(descriptors)/len(descriptors)
+            self.pca.fit(descriptors.cpu().numpy())
+            self.trans_vec = self.pca.components_[0]
 
-            P = np.dot(trans_vec, tmp.detach().cpu().numpy().transpose()).reshape(x, y, z)
-            self.kernel_cls = self.transformer(
-                self.transformer.mem.examplers[-1] *
-                P[:, np.newaxis, :, :].repeat(c, 1))
-            pass
 
         # END:测试实验部分
 

@@ -52,3 +52,5 @@ class Mem():
         if len(self.examplers) >= self.amount:
             self.examplers.__delitem__(1)
         self.examplers.append(exampler)
+
+

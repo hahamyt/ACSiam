@@ -27,5 +27,5 @@ if __name__ == '__main__':
 
     # run experiments
     for e in experiments:
-        e.run(tracker, visualize=True)
+        e.run(tracker, visualize=False)
         e.report([tracker.name])
