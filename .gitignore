@@ -10,4 +10,5 @@ pretrained/
 data
 data/
 temp/
+runs/
 !.gitignore

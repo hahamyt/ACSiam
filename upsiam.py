@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 class UpBlock(nn.Module):
     def __init__(self, channels, dim_size, X, amount):
@@ -49,6 +50,13 @@ class Mem():
         self.examplers = []
 
     def insert(self, exampler):
+        # _, c, w, h = exampler.shape
+        # if len(self.examplers) <= self.amount:
+        #     exampler[:,:,:,0:int(w/2/2)] = np.random.randint(255)
+        #     exampler[:,:,:,w-int(w/2/2):w] = np.random.randint(255)
+        #     exampler[:,:,0:int(h/2/2),:] = np.random.randint(255)
+        #     exampler[:,:,h-int(h/2/2):h,:] = np.random.randint(255)
+
         if len(self.examplers) >= self.amount:
             self.examplers.__delitem__(1)
         self.examplers.append(exampler)
