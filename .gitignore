@@ -1,7 +1,9 @@
-/codes/bag
-/codes/SiamRPNBIG.model
-/codes/SiamRPNVOT.model
-/codes/__pycache__
-/codes/update/__pycache__
-.idea
-.vscode
+.*
+*.pyc
+__pycache__/
+results/
+reports/
+pretrained/
+data
+data/
+!.gitignore
